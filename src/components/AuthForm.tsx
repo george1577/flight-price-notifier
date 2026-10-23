@@ -12,17 +12,20 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [checkEmail, setCheckEmail] = useState(false);
   const isSignUp = mode === "signup";
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
-    const { error } = isSignUp
+    const { data, error } = isSignUp
       ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin + "/app" } })
       : await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) return setError(error.message);
+    // Email confirmation is on, so sign-up returns no session until the link is clicked.
+    if (!data.session) return setCheckEmail(true);
     navigate({ to: "/app" });
   }
 
@@ -34,6 +37,16 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
         <p className="mt-2 text-sm text-muted-foreground">
           {isSignUp ? "用 email 註冊，開始追蹤機票價格。" : "歡迎回來，登入查看你的航線。"}
         </p>
+        {checkEmail ? (
+          <div className="mt-8 space-y-2 rounded-2xl border border-border bg-card p-6">
+            <p className="font-semibold">請到信箱確認 Check your inbox</p>
+            <p className="text-sm text-muted-foreground">
+              我們已寄送確認信到 <span className="font-medium text-foreground">{email}</span>，點擊信中連結即可完成註冊。
+              <br />
+              We sent a confirmation link to {email}. Click it to finish signing up.
+            </p>
+          </div>
+        ) : (
         <form onSubmit={onSubmit} className="mt-8 space-y-5 rounded-2xl border border-border bg-card p-6">
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
@@ -48,6 +61,7 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
             {loading ? "請稍候…" : isSignUp ? "Sign up / 註冊" : "Sign in / 登入"}
           </Button>
         </form>
+        )}
         <p className="mt-6 text-center text-sm text-muted-foreground">
           {isSignUp ? (
             <>已經有帳號？ <Link to="/signin" className="text-primary hover:underline">Sign in</Link></>
