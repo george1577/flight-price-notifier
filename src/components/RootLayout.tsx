@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Link, Outlet, useRouteError } from "react-router";
+import { Link, Outlet, useLocation, useNavigate, useRouteError } from "react-router";
 
 import { reportLovableError } from "@/lib/lovable-error-reporting";
 import { supabase } from "@/integrations/supabase/client";
 
 export function RootLayout() {
   const [queryClient] = useState(() => new QueryClient());
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    // A failed email link (expired or already used) comes back as e.g. /#error_code=otp_expired.
+    if (location.pathname !== "/signin" && /(^#|&)error_code=/.test(location.hash)) {
+      navigate({ pathname: "/signin", hash: location.hash }, { replace: true });
+    }
+  }, [location, navigate]);
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_IN" || event === "USER_UPDATED") queryClient.invalidateQueries();
