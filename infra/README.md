@@ -61,6 +61,13 @@ aws dynamodb get-item --region us-east-1 --table-name subscriptions \
 
 Expect `route=TPE-TYO`, `currency=TWD`, `target_price=10000`, no `subscription_status`.
 
+```bash
+curl -s "$API/subscriptions?email=you@example.com"
+```
+
+Expect a JSON array with that row and `"target_price": 10000` (a number, not a string).
+Note: the API trusts the email the client sends (no JWT check); this gap is accepted for M1.
+
 ### flight-parser (one route)
 
 Give the test subscriber a target above the live fare, invoke the parser for its

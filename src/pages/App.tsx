@@ -8,12 +8,16 @@ import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/SiteHeader";
 import { useAuthUser } from "@/components/RequireAuth";
 import { usePageMeta } from "@/hooks/use-page-meta";
+import { useSubscriptions } from "@/hooks/use-subscriptions";
 
 export default function AppPage() {
   usePageMeta("Dashboard — Flight Price Notifier", "Your flight price tracking dashboard.");
   const user = useAuthUser();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const email = user.email ?? "";
+  // If the list request fails, `data` stays undefined and every plan renders unsubscribed.
+  const { data: subscriptions } = useSubscriptions(email);
 
   async function signOut() {
     await queryClient.cancelQueries();
@@ -38,7 +42,12 @@ export default function AppPage() {
         </p>
         <div className="mt-8 grid gap-6 sm:grid-cols-2">
           {PLANS.map((plan) => (
-            <PlanCard key={plan.name} plan={plan} email={user.email ?? ""} />
+            <PlanCard
+              key={plan.name}
+              plan={plan}
+              email={email}
+              subscription={subscriptions?.find((s) => s.route === plan.route)}
+            />
           ))}
         </div>
       </main>
