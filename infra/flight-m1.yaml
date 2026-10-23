@@ -199,6 +199,12 @@ Resources:
       Timeout: 30
       MemorySize: 128
       Code: ../lambdas/flight-fare-notification/
+      Environment:
+        Variables:
+          # Dedup / re-alert thresholds (#10), compared on the TWD price only.
+          NOTIFY_FLOOR_HOURS: "24"
+          REALERT_PCT: "20"
+          REALERT_ABS_TWD: "2000"
 
   # PURGE flight-fare-queue before this mapping is first created (infra/README.md):
   # it drains the queue at once, and stale test matches burst into Resend 403s/429s.

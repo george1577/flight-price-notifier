@@ -1,7 +1,8 @@
 """flight-fare-notification: SQS consumer of `flight-fare-queue`, one match -> one email.
 
 Per message (contract: spec #5, produced by flight-parser):
-1. should_send(): the dedup / re-alert check (ticket #10). Currently always sends.
+1. should_send(): the dedup / re-alert check (ticket #10) against the latest
+   notification_history row; NOTIFY_FLOOR_HOURS / REALERT_PCT / REALERT_ABS_TWD env vars.
 2. Render the email inline (subject / render_html / render_text / booking_url).
 3. POST to Resend with the `flight/resend` credentials and a custom User-Agent.
 4. Only after a 2xx, write a `notification_history` row.
@@ -17,10 +18,11 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
 RESEND_URL = "https://api.resend.com/emails"
 # Resend sits behind Cloudflare: the default Python-urllib User-Agent gets a 403 (1010).
@@ -69,12 +71,28 @@ def notify(msg):
 
 
 def should_send(email, route, fare):
-    """Dedup / re-alert gate, checked BEFORE calling Resend.
+    """Dedup / re-alert gate, checked BEFORE calling Resend. TWD (`cheapest`) only.
 
-    Ticket #10 replaces this with: query the latest notification_history row for
-    pk="{email}#{route}" and apply NOTIFY_FLOOR_HOURS / REALERT_PCT / REALERT_ABS_TWD.
+    Send if there is no prior alert for pk="{email}#{route}", or the last one is older
+    than NOTIFY_FLOOR_HOURS. Inside that window, send only on a big further drop:
+    new <= last * (1 - REALERT_PCT/100)  or  last - new >= REALERT_ABS_TWD.
     """
-    return True
+    items = history_table.query(
+        KeyConditionExpression=Key("pk").eq(f"{email}#{route}"),
+        ScanIndexForward=False,  # newest sent_at first
+        Limit=1,
+    ).get("Items", [])
+    if not items:
+        return True
+    last = items[0]
+    floor_hours = float(os.environ.get("NOTIFY_FLOOR_HOURS", "24"))
+    sent_at = datetime.fromisoformat(str(last["sent_at"]).replace("Z", "+00:00"))
+    if datetime.now(timezone.utc) - sent_at > timedelta(hours=floor_hours):
+        return True
+    pct = Decimal(os.environ.get("REALERT_PCT", "20"))
+    abs_twd = Decimal(os.environ.get("REALERT_ABS_TWD", "2000"))
+    last_price, new_price = Decimal(str(last["price"])), Decimal(str(fare["price"]))
+    return new_price <= last_price * (1 - pct / 100) or (last_price - new_price) >= abs_twd
 
 
 # ---------------------------------------------------------------- renderer

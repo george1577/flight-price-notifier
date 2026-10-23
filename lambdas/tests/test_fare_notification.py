@@ -201,3 +201,117 @@ def test_permanent_resend_failure_is_dropped_without_history(
     assert len(resend.requests) == 1
     assert history(notification_history_table) == []
     assert str(status) in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ dedup / re-alert (#10)
+def seed_sent(table, price, hours_ago, email="me@example.com", route="TPE-TYO"):
+    sent_at = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    table.put_item(
+        Item={
+            "pk": f"{email}#{route}",
+            "sent_at": sent_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "email": email,
+            "route": route,
+            "price": price,
+            "currency": "TWD",
+        }
+    )
+
+
+def test_repeat_inside_window_is_skipped(monkeypatch, secrets, notification_history_table, capsys):
+    seed_sent(notification_history_table, price=9325, hours_ago=0.5)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match()), None)
+
+    assert resend.requests == []
+    assert result["results"] == ["skipped"]
+    assert len(history(notification_history_table)) == 1
+    assert "skipped (deduped)" in capsys.readouterr().out
+
+
+def test_same_price_after_window_sends_again_and_writes_history(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=9325, hours_ago=25)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match()), None)
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 1
+    assert len(history(notification_history_table)) == 2
+
+
+def test_percentage_drop_inside_window_realerts(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=5000, hours_ago=1)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(cheapest={**TWD, "price": 3900})), None)  # -22%, only -NT$1,100
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 1
+    assert len(history(notification_history_table)) == 2
+
+
+def test_absolute_drop_inside_window_realerts(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=20000, hours_ago=1)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(cheapest={**TWD, "price": 17500})), None)  # -NT$2,500, only -12.5%
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "last, new, hours_ago, expected",
+    [
+        (10000, 8000, 1, "sent"),  # exactly -20%: new <= last * 0.8
+        (5000, 4001, 1, "skipped"),  # -19.98%, -NT$999
+        (20000, 18000, 1, "sent"),  # exactly -NT$2,000 (only -10%)
+        (20000, 18001, 1, "skipped"),  # -NT$1,999, -9.995%
+        (9325, 9325, 23.9, "skipped"),  # just inside the 24h window
+        (9325, 9325, 24.1, "sent"),  # just outside it
+        (9325, 9500, 1, "skipped"),  # price went up
+    ],
+)
+def test_realert_boundaries(monkeypatch, secrets, notification_history_table, last, new, hours_ago, expected):
+    seed_sent(notification_history_table, price=last, hours_ago=hours_ago)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(cheapest={**TWD, "price": new})), None)
+
+    assert result["results"] == [expected]
+    assert len(resend.requests) == (1 if expected == "sent" else 0)
+
+
+def test_compares_against_the_newest_alert(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=20000, hours_ago=10)  # older, expensive
+    seed_sent(notification_history_table, price=9325, hours_ago=1)  # latest
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(cheapest={**TWD, "price": 9000})), None)
+
+    assert result["results"] == ["skipped"]  # vs 9,325 it is only -NT$325
+    assert resend.requests == []
+
+
+def test_dedup_is_per_subscriber_and_route(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=9325, hours_ago=1, route="TPE-SEL")
+    seed_sent(notification_history_table, price=9325, hours_ago=1, email="other@example.com")
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match()), None)
+
+    assert result["results"] == ["sent"]
+
+
+def test_thresholds_come_from_env(monkeypatch, secrets, notification_history_table):
+    monkeypatch.setenv("NOTIFY_FLOOR_HOURS", "1")
+    monkeypatch.setenv("REALERT_PCT", "5")
+    monkeypatch.setenv("REALERT_ABS_TWD", "100000")
+    seed_sent(notification_history_table, price=10000, hours_ago=0.5)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(cheapest={**TWD, "price": 9500})), None)  # exactly -5%
+
+    assert result["results"] == ["sent"]
