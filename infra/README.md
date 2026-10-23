@@ -56,11 +56,32 @@ in your local `.env.local`, then redeploy the site. See `../.env.example`.
   ```
 
   Until it's uploaded, the `flight-price-check` rule's runs fail with `NoSuchKey`.
-  To add a route, edit `infra/flight-routes.json` and upload it again. No code change
-  is needed. To change how often it runs, change `ScheduleExpression` on
+  To add a route, edit `infra/flight-routes.json` and upload it again (the scheduled
+  check needs no code change, but see "Deliberate duplication" below for the other
+  three places a new route must be added). To change how often it runs, change `ScheduleExpression` on
   `FlightPriceCheckRule` and redeploy.
+
 - **Secrets.** `flight/*` secrets (`flight/travelpayouts`, `flight/resend`, ...) are
   created in the prerequisites, not here. The role is only granted read access to them.
+- **Region.** The template's `Rules` block rejects any region other than `us-east-1`,
+  so a deploy elsewhere fails at validation, before anything is created.
+- **Routes object access.** `flight-lambda-role` may only `s3:GetObject` the single key
+  `flight-config-<account>/flight-routes.json`. Nothing in the stack writes to the bucket;
+  you upload the file with your own credentials (above).
+
+## Deliberate duplication: adding a route
+
+Each Lambda is a single deployable `index.py` (no shared layer), and spec #5 keeps the
+email renderer inline in `flight-fare-notification`. Small helpers (logging, TWD
+formatting, route/city lookups) are therefore duplicated across Lambdas on purpose; do
+not factor them into a shared module.
+
+The route list lives in four places that **must change together** when you add a route:
+
+1. `src/lib/plans.ts` (the dashboard cards)
+2. `PLANS` in `lambdas/flight-save-subscription/index.py` (which `plan_name`s POST /subscribe accepts)
+3. `infra/flight-routes.json` (what the scheduled check fetches; re-upload it to S3)
+4. `CITY_NAMES` in `lambdas/flight-fare-notification/index.py` (city names in the email)
 
 ## Smoke check after deploy
 

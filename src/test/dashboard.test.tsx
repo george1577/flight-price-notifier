@@ -249,20 +249,27 @@ describe("Dashboard subscribed state", () => {
   it.each([
     ["the server errors", jsonResponse(500, { message: "boom" })],
     ["the network fails", new TypeError("Failed to fetch")],
-  ])("still renders every plan as unsubscribed when %s", async (_label, failure) => {
-    mockApi({ list: failure, subscribe: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 9000)) });
-    renderDashboard();
-    await waitFor(() => expect(listRequests()).toHaveLength(1));
+  ])(
+    "still renders every plan as unsubscribed, with a notice, when %s",
+    async (_label, failure) => {
+      mockApi({ list: failure, subscribe: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 9000)) });
+      renderDashboard();
+      await waitFor(() => expect(listRequests()).toHaveLength(1));
 
-    for (const name of [/台北 ✈ 東京/, /台北 ✈ 首爾/]) {
-      expect(within(card(name)).queryByText("已訂閱")).not.toBeInTheDocument();
-      expect(within(card(name)).getByRole("button", { name: "開始追蹤" })).toBeEnabled();
-    }
+      // A non-blocking notice explains why nothing shows as subscribed.
+      const notice = await screen.findByRole("alert");
+      expect(notice).toHaveTextContent(/無法載入你的訂閱/);
 
-    // Subscribing still works and flips the card.
-    const tokyo = card(/台北 ✈ 東京/);
-    fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "9000" } });
-    fireEvent.click(within(tokyo).getByRole("button", { name: "開始追蹤" }));
-    expect(await within(tokyo).findByText("已訂閱")).toBeInTheDocument();
-  });
+      for (const name of [/台北 ✈ 東京/, /台北 ✈ 首爾/]) {
+        expect(within(card(name)).queryByText("已訂閱")).not.toBeInTheDocument();
+        expect(within(card(name)).getByRole("button", { name: "開始追蹤" })).toBeEnabled();
+      }
+
+      // Subscribing still works and flips the card.
+      const tokyo = card(/台北 ✈ 東京/);
+      fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "9000" } });
+      fireEvent.click(within(tokyo).getByRole("button", { name: "開始追蹤" }));
+      expect(await within(tokyo).findByText("已訂閱")).toBeInTheDocument();
+    },
+  );
 });

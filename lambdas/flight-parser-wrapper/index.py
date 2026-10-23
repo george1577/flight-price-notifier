@@ -2,7 +2,8 @@
 
 Reads the admin-managed routes list `flight-routes.json` from the CONFIG_BUCKET S3
 bucket and asynchronously (InvocationType=Event) invokes `flight-parser` once per
-route with {origin, destination, route, plan}. Adding a route is a config edit only.
+route with {origin, destination, route}. This Lambda needs no code change
+to add a route (see infra/README.md for the places that do).
 """
 
 import json
@@ -10,7 +11,7 @@ import os
 
 import boto3
 
-ROUTES_KEY = os.environ.get("ROUTES_KEY", "flight-routes.json")
+ROUTES_KEY = "flight-routes.json"
 PARSER_FUNCTION = os.environ.get("PARSER_FUNCTION", "flight-parser")
 
 s3 = boto3.client("s3")
@@ -24,7 +25,7 @@ def handler(event, context):
     invoked = []
     for r in routes:
         route = f"{r['origin']}-{r['destination']}"
-        payload = {"origin": r["origin"], "destination": r["destination"], "route": route, "plan": r.get("plan")}
+        payload = {"origin": r["origin"], "destination": r["destination"], "route": route}
         lambda_client.invoke(
             FunctionName=PARSER_FUNCTION,
             InvocationType="Event",

@@ -43,8 +43,8 @@ def test_invokes_parser_once_per_configured_route_asynchronously(wrapper):
     assert [c["FunctionName"] for c in calls] == ["flight-parser", "flight-parser"]
     assert all(c["InvocationType"] == "Event" for c in calls)
     assert [json.loads(c["Payload"]) for c in calls] == [
-        {"origin": "TPE", "destination": "TYO", "route": "TPE-TYO", "plan": "tokyo"},
-        {"origin": "TPE", "destination": "SEL", "route": "TPE-SEL", "plan": "seoul"},
+        {"origin": "TPE", "destination": "TYO", "route": "TPE-TYO"},
+        {"origin": "TPE", "destination": "SEL", "route": "TPE-SEL"},
     ]
     assert result["invoked"] == 2
 

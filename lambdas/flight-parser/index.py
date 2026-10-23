@@ -28,7 +28,7 @@ QUEUE_NAME = os.environ.get("QUEUE_NAME", "flight-fare-queue")
 
 secrets = boto3.client("secretsmanager")
 sqs = boto3.client("sqs")
-table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
+table = boto3.resource("dynamodb").Table("subscriptions")
 _queue_url = None
 
 

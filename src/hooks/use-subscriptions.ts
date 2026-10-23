@@ -18,7 +18,7 @@ export function upsertSubscription(list: Subscription[] | undefined, saved: Subs
   return [...(list ?? []).filter((s) => s.route !== saved.route), saved];
 }
 
-/** The signed-in user's subscriptions (GET /subscriptions). Callers treat a failure as "none". */
+/** The signed-in user's subscriptions (GET /subscriptions). On failure the dashboard renders every plan unsubscribed plus a notice. */
 export function useSubscriptions(email: string) {
   return useQuery({
     queryKey: subscriptionsKey(email),

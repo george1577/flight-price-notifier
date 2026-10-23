@@ -31,7 +31,7 @@ DEFAULT_FROM = "onboarding@resend.dev"  # demo sender until M3 verifies a domain
 DROP_STATUSES = {403, 422}
 
 secrets = boto3.client("secretsmanager")
-history_table = boto3.resource("dynamodb").Table(os.environ.get("HISTORY_TABLE", "notification_history"))
+history_table = boto3.resource("dynamodb").Table("notification_history")
 _resend = None  # cached per warm container; changing the secret needs a cold start
 _UNSET = object()
 _marker = _UNSET
@@ -104,7 +104,7 @@ def city(code):
     return CITY_NAMES.get(code, code)
 
 
-def ntd(amount):
+def format_twd(amount):
     return f"NT${int(round(float(amount))):,}"
 
 
@@ -118,7 +118,7 @@ def day(iso):
 
 
 def subject(fare):
-    return f"✈️ {city(fare['origin'])} → {city(fare['destination'])} 降價通知！{ntd(fare['price'])} 已達標"
+    return f"✈️ {city(fare['origin'])} → {city(fare['destination'])} 降價通知！{format_twd(fare['price'])} 已達標"
 
 
 def booking_url(fare, marker=None):
@@ -137,7 +137,7 @@ def booking_url(fare, marker=None):
 
 def _details(fare, target_price):
     """(label, value) lines shared by the HTML and text bodies."""
-    lines = [("目標價", ntd(target_price))] if target_price is not None else []
+    lines = [("目標價", format_twd(target_price))] if target_price is not None else []
     if fare.get("airline"):
         lines.append(("航空公司", fare["airline"]))
     if day(fare.get("depart_date")):
@@ -154,7 +154,7 @@ def render_html(fare, target_price, marker=None, usd_price=None):
         '<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
         'max-width:520px;margin:0 auto;color:#1f2937;line-height:1.5">',
         f'<p style="margin:0 0 4px;color:#6b7280">{esc(route_label)} 機票降價通知</p>',
-        f'<h1 style="margin:0 0 8px;font-size:28px">{esc(ntd(fare["price"]))}</h1>',
+        f'<h1 style="margin:0 0 8px;font-size:28px">{esc(format_twd(fare["price"]))}</h1>',
     ]
     if usd_price is not None:
         parts.append(f'<p style="margin:0 0 12px;color:#6b7280">{esc(usd_text(usd_price))}</p>')
@@ -171,7 +171,7 @@ def render_html(fare, target_price, marker=None, usd_price=None):
 
 
 def render_text(fare, target_price, marker=None, usd_price=None):
-    lines = [f"{city(fare['origin'])} → {city(fare['destination'])} 機票降價通知", "", ntd(fare["price"])]
+    lines = [f"{city(fare['origin'])} → {city(fare['destination'])} 機票降價通知", "", format_twd(fare["price"])]
     if usd_price is not None:
         lines.append(usd_text(usd_price))
     lines.append("")
@@ -195,7 +195,8 @@ def affiliate_marker():
         try:
             raw = json.loads(secrets.get_secret_value(SecretId="flight/travelpayouts")["SecretString"])
             value = raw.get("marker") if isinstance(raw, dict) else None
-            _marker = str(value).strip() or None if value else None
+            marker = str(value).strip() if value else ""
+            _marker = marker or None
         except Exception as err:  # missing secret, plain-string token, no permission...
             log(note="no affiliate marker", error=str(err))
             _marker = None

@@ -10,6 +10,12 @@ Description: >-
 #   `flight-data` inline policy below; never drop or replace existing statements.
 # - Lambdas: python3.12, handler index.handler, Code: ../lambdas/<function-name>/
 
+Rules:
+  OnlyUsEast1:
+    Assertions:
+      - Assert: !Equals [!Ref AWS::Region, us-east-1]
+        AssertDescription: Flight Price Notifier M1 must be deployed in us-east-1.
+
 Resources:
   # ---------------------------------------------------------------- DynamoDB
   SubscriptionsTable:
@@ -89,12 +95,10 @@ Resources:
                   - sqs:SendMessage
                   - sqs:GetQueueUrl
                 Resource: !GetAtt FlightFareQueue.Arn
-              - Sid: FlightConfigObjects # flight-parser-wrapper reads flight-routes.json
+              - Sid: FlightConfigObjects # flight-parser-wrapper reads flight-routes.json (read-only)
                 Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                Resource: !Sub arn:aws:s3:::flight-config-${AWS::AccountId}/*
+                Action: s3:GetObject
+                Resource: !Sub arn:aws:s3:::flight-config-${AWS::AccountId}/flight-routes.json
               - Sid: FlightParserInvoke # flight-parser-wrapper fans out per route
                 Effect: Allow
                 Action: lambda:InvokeFunction

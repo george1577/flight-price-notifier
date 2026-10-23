@@ -113,7 +113,7 @@ def test_first_send_posts_to_resend_and_writes_history(monkeypatch, secrets, not
     assert abs(datetime.now(timezone.utc) - sent_at) < timedelta(minutes=1)
 
 
-def test_email_leads_with_ntd_and_always_has_a_text_part(monkeypatch, secrets, notification_history_table):
+def test_email_leads_with_twd_and_always_has_a_text_part(monkeypatch, secrets, notification_history_table):
     fn, resend = setup(monkeypatch)
 
     fn.handler(sqs_event(match()), None)

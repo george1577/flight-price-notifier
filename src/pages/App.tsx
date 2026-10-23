@@ -1,9 +1,10 @@
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { LogOut } from "lucide-react";
+import { CloudOff, LogOut } from "lucide-react";
 import { PlanCard } from "@/components/PlanCard";
 import { PLANS } from "@/lib/plans";
 import { supabase } from "@/integrations/supabase/client";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/SiteHeader";
 import { useAuthUser } from "@/components/RequireAuth";
@@ -16,8 +17,9 @@ export default function AppPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const email = user.email ?? "";
-  // If the list request fails, `data` stays undefined and every plan renders unsubscribed.
-  const { data: subscriptions } = useSubscriptions(email);
+  // If the list request fails, `data` stays undefined: every plan renders unsubscribed (still
+  // usable) and a non-blocking notice says the saved subscriptions couldn't be loaded.
+  const { data: subscriptions, isError: loadFailed } = useSubscriptions(email);
 
   async function signOut() {
     await queryClient.cancelQueries();
@@ -40,6 +42,15 @@ export default function AppPage() {
         <p className="mt-3 text-muted-foreground">
           選一條航線、設定目標價，票價達標時我們會寄信通知你。
         </p>
+        {loadFailed && (
+          <Alert className="mt-6 rounded-2xl border-2 border-dashed border-foreground bg-marigold/30 text-foreground">
+            <CloudOff className="h-4 w-4" />
+            <AlertTitle>無法載入你的訂閱</AlertTitle>
+            <AlertDescription>
+              已訂閱的航線暫時顯示為未訂閱。你仍可設定目標價，或稍後重新整理頁面。
+            </AlertDescription>
+          </Alert>
+        )}
         <div className="mt-8 grid gap-6 sm:grid-cols-2">
           {PLANS.map((plan) => (
             <PlanCard
