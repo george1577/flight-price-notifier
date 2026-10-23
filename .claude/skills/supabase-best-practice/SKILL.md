@@ -77,5 +77,5 @@ Auth-only means almost no Supabase tooling is needed — mostly just creating th
 
 ## TODO
 
-- [ ] Confirm the exact Lovable "Connect Supabase" UI flow for swapping to the student's project (M0 Step 5).
+- [ ] Confirm the exact Lovable "Connect Supabase" UI flow for swapping to the student's project (M0 Step 9).
 - [ ] Note the current Supabase default for email confirmation (on/off) so the M0 demo instruction stays accurate.
