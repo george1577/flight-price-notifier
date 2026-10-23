@@ -85,7 +85,7 @@ Swap any real-looking emails to `example.com` placeholders first. (Note: the stu
 
 Lovable's output is Vite + React. Vercel usually auto-detects that, but ~10% of the time it picks "Other" / guesses Next.js and the deploy fails with a cryptic build error.
 
-**If a Vercel deploy fails right after Lovable connects to GitHub (M0 Step 4):** Vercel project → Settings → General → Framework Preset → set to **Vite** → redeploy.
+**If a Vercel deploy fails right after importing the repo (M0 Step 8):** Vercel project → Settings → General → Framework Preset → set to **Vite** → redeploy.
 
 ### Tip 2 — Free-tier credit budget — re-roll discipline
 
