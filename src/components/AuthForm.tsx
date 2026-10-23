@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,13 +7,26 @@ import { Label } from "@/components/ui/label";
 import { SiteHeader } from "@/components/SiteHeader";
 import { usePageMeta } from "@/hooks/use-page-meta";
 
+const emailRedirectTo = () => window.location.origin + "/app";
+
+// Supabase sends failed confirmation links back with the error in the URL hash, e.g. #error_code=otp_expired.
+function linkErrorFromHash(hash: string): string | null {
+  const params = new URLSearchParams(hash.replace(/^#/, ""));
+  if (!params.get("error_code")) return null;
+  return "確認連結已失效或已使用過，請輸入 email 重新寄送。This confirmation link has expired or was already used. Enter your email to get a new one.";
+}
+
 export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkEmail, setCheckEmail] = useState(false);
+  const [linkError] = useState(() => linkErrorFromHash(location.hash));
+  const [canResend, setCanResend] = useState(linkError !== null);
+  const [resendStatus, setResendStatus] = useState<string | null>(null);
   const isSignUp = mode === "signup";
   usePageMeta(
     isSignUp ? "Sign up — Flight Price Notifier" : "Sign in — Flight Price Notifier",
@@ -27,13 +40,25 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
     setError(null);
     setLoading(true);
     const { data, error } = isSignUp
-      ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin + "/app" } })
+      ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: emailRedirectTo() } })
       : await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
-    if (error) return setError(error.message);
+    if (error) {
+      if (error.code === "email_not_confirmed") setCanResend(true);
+      return setError(error.message);
+    }
     // Email confirmation is on, so sign-up returns no session until the link is clicked.
     if (!data.session) return setCheckEmail(true);
     navigate("/app");
+  }
+
+  async function resend() {
+    if (!email) return setResendStatus("請先輸入 email。Enter your email first.");
+    setResendStatus(null);
+    setLoading(true);
+    const { error } = await supabase.auth.resend({ type: "signup", email, options: { emailRedirectTo: emailRedirectTo() } });
+    setLoading(false);
+    setResendStatus(error ? error.message : `已重新寄送確認信到 ${email}。We sent a new confirmation link to ${email}.`);
   }
 
   return (
@@ -52,9 +77,14 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
               <br />
               We sent a confirmation link to {email}. Click it to finish signing up.
             </p>
+            <Button type="button" variant="outline" size="sm" className="mt-2" onClick={resend} disabled={loading}>
+              重新寄送 Resend email
+            </Button>
+            {resendStatus && <p className="text-sm text-muted-foreground">{resendStatus}</p>}
           </div>
         ) : (
         <form onSubmit={onSubmit} className="mt-8 space-y-5 rounded-2xl border border-border bg-card p-6">
+          {linkError && <p className="text-sm text-destructive">{linkError}</p>}
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
             <Input id="email" type="email" required autoComplete="email" placeholder="user@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -67,6 +97,12 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
           <Button type="submit" variant="hero" className="w-full" disabled={loading}>
             {loading ? "請稍候…" : isSignUp ? "Sign up / 註冊" : "Sign in / 登入"}
           </Button>
+          {canResend && (
+            <Button type="button" variant="outline" className="w-full" onClick={resend} disabled={loading}>
+              重新寄送確認信 Resend confirmation email
+            </Button>
+          )}
+          {resendStatus && <p className="text-sm text-muted-foreground">{resendStatus}</p>}
         </form>
         )}
         <p className="mt-6 text-center text-sm text-muted-foreground">
