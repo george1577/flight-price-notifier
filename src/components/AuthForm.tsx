@@ -65,12 +65,12 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
     <div className="min-h-screen bg-hero">
       <SiteHeader />
       <main className="mx-auto flex max-w-md flex-col px-5 py-16 animate-fade-up">
-        <h1 className="text-3xl font-bold tracking-tight">{isSignUp ? "建立帳號 Sign up" : "登入 Sign in"}</h1>
+        <h1 className="text-3xl tracking-tight">{isSignUp ? "建立帳號 Sign up" : "登入 Sign in"}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {isSignUp ? "用 email 註冊，開始追蹤機票價格。" : "歡迎回來，登入查看你的航線。"}
         </p>
         {checkEmail ? (
-          <div className="mt-8 space-y-2 rounded-2xl border border-border bg-card p-6">
+          <div className="specimen mt-8 space-y-2 rounded-2xl p-6">
             <p className="font-semibold">請到信箱確認 Check your inbox</p>
             <p className="text-sm text-muted-foreground">
               我們已寄送確認信到 <span className="font-medium text-foreground">{email}</span>，點擊信中連結即可完成註冊。
@@ -83,7 +83,7 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
             {resendStatus && <p className="text-sm text-muted-foreground">{resendStatus}</p>}
           </div>
         ) : (
-        <form onSubmit={onSubmit} className="mt-8 space-y-5 rounded-2xl border border-border bg-card p-6">
+        <form onSubmit={onSubmit} className="specimen mt-8 space-y-5 rounded-2xl p-6">
           {linkError && <p className="text-sm text-destructive">{linkError}</p>}
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>

@@ -30,9 +30,9 @@ export default function AppPage() {
         }
       />
       <main className="mx-auto max-w-3xl px-5 py-20 animate-fade-up">
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Hi {user.email}</h1>
-        <div className="mt-8 rounded-2xl border border-border bg-card p-8">
-          <span className="grid h-11 w-11 place-items-center rounded-xl bg-accent text-primary-glow">
+        <h1 className="break-all text-3xl tracking-tight sm:text-4xl">Hi {user.email}</h1>
+        <div className="specimen mt-8 rounded-2xl p-8">
+          <span className="grid h-11 w-11 place-items-center rounded-full border-2 border-foreground bg-leaf text-foreground">
             <Radar className="h-5 w-5" />
           </span>
           <p className="mt-5 text-lg">你的航線追蹤儀表板即將上線 — 下一個里程碑會加上訂閱航線的功能。</p>

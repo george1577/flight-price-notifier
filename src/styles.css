@@ -6,6 +6,7 @@
 
 @theme inline {
   --font-sans: "Manrope", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Archivo Black", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -20,6 +21,11 @@
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary-glow: var(--primary-glow);
+  --color-leaf: var(--leaf);
+  --color-poppy: var(--poppy);
+  --color-marigold: var(--marigold);
+  --color-periwinkle: var(--periwinkle);
+  --color-blossom: var(--blossom);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -34,52 +40,73 @@
 }
 
 :root {
+  /* Herbarium theme: cream paper, black ink outlines, pressed-flower colours. */
   --radius: 0.75rem;
-  --background: oklch(0.14 0.012 285);
-  --foreground: oklch(0.96 0.008 285);
-  --card: oklch(0.18 0.018 285);
-  --card-foreground: oklch(0.96 0.008 285);
-  --popover: oklch(0.18 0.018 285);
-  --popover-foreground: oklch(0.96 0.008 285);
-  --primary: oklch(0.65 0.22 293);
-  --primary-glow: oklch(0.75 0.17 305);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.23 0.02 285);
-  --secondary-foreground: oklch(0.96 0.008 285);
-  --muted: oklch(0.22 0.015 285);
-  --muted-foreground: oklch(0.7 0.02 285);
-  --accent: oklch(0.26 0.05 293);
-  --accent-foreground: oklch(0.96 0.008 285);
-  --destructive: oklch(0.65 0.21 22);
+  --paper: oklch(0.96 0.025 90);
+  --ink: oklch(0.2 0.01 60);
+  --leaf: oklch(0.55 0.13 145);
+  --poppy: oklch(0.64 0.19 38);
+  --marigold: oklch(0.84 0.16 88);
+  --periwinkle: oklch(0.62 0.13 275);
+  --blossom: oklch(0.78 0.1 0);
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: oklch(0.985 0.012 90);
+  --card-foreground: var(--ink);
+  --popover: oklch(0.985 0.012 90);
+  --popover-foreground: var(--ink);
+  --primary: var(--poppy);
+  --primary-glow: var(--leaf);
+  --primary-foreground: oklch(0.99 0.01 90);
+  --secondary: oklch(0.91 0.04 120);
+  --secondary-foreground: var(--ink);
+  --muted: oklch(0.92 0.03 90);
+  --muted-foreground: oklch(0.42 0.03 70);
+  --accent: oklch(0.9 0.07 135);
+  --accent-foreground: var(--ink);
+  --destructive: oklch(0.55 0.2 27);
   --destructive-foreground: oklch(0.99 0 0);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.65 0.22 293);
-  --gradient-primary: linear-gradient(135deg, var(--primary), var(--primary-glow));
-  --gradient-hero: radial-gradient(ellipse 70% 55% at 50% 0%, oklch(0.65 0.22 293 / 28%), transparent 70%);
-  --shadow-glow: 0 10px 40px -10px oklch(0.65 0.22 293 / 55%);
+  --border: var(--ink);
+  --input: var(--ink);
+  --ring: var(--leaf);
+  --gradient-primary: linear-gradient(var(--poppy), var(--poppy));
+  --gradient-hero:
+    radial-gradient(circle at 12% 18%, oklch(0.84 0.16 88 / 22%) 0 9rem, transparent 9.1rem),
+    radial-gradient(circle at 90% 8%, oklch(0.62 0.13 275 / 22%) 0 7rem, transparent 7.1rem),
+    radial-gradient(circle at 85% 85%, oklch(0.55 0.13 145 / 14%) 0 10rem, transparent 10.1rem);
+  --shadow-glow: 3px 3px 0 var(--ink);
 }
 
 @layer base {
   * { border-color: var(--color-border); }
-  html { color-scheme: dark; }
+  html { color-scheme: light; }
   body {
     background-color: var(--color-background);
+    /* Faint paper grain. */
+    background-image: radial-gradient(oklch(0.2 0.01 60 / 7%) 1px, transparent 1px);
+    background-size: 18px 18px;
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
+  h1, h2 { font-family: "Archivo Black", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif; font-weight: 900; }
 }
 
 @utility bg-hero { background-image: var(--gradient-hero); }
 @utility bg-gradient-primary { background-image: var(--gradient-primary); }
+/* Ink lettering sitting on a marigold highlighter stroke. */
 @utility text-gradient {
-  background-image: var(--gradient-primary);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--ink);
+  background-image: linear-gradient(transparent 58%, var(--marigold) 58%, var(--marigold) 92%, transparent 92%);
+  padding: 0 0.1em;
 }
 @utility shadow-glow { box-shadow: var(--shadow-glow); }
+/* Pressed-specimen card: ink outline with a hard offset shadow. */
+@utility specimen {
+  border: 2px solid var(--ink);
+  background-color: var(--card);
+  box-shadow: 5px 5px 0 var(--ink);
+}
 
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(16px); }
