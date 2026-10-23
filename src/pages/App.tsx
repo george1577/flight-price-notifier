@@ -1,6 +1,8 @@
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { LogOut, Radar } from "lucide-react";
+import { LogOut } from "lucide-react";
+import { PlanCard } from "@/components/PlanCard";
+import { PLANS } from "@/lib/plans";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -31,14 +33,13 @@ export default function AppPage() {
       />
       <main className="mx-auto max-w-3xl px-5 py-20 animate-fade-up">
         <h1 className="break-all text-3xl tracking-tight sm:text-4xl">Hi {user.email}</h1>
-        <div className="specimen mt-8 rounded-2xl p-8">
-          <span className="grid h-11 w-11 place-items-center rounded-full border-2 border-foreground bg-leaf text-foreground">
-            <Radar className="h-5 w-5" />
-          </span>
-          <p className="mt-5 text-lg">你的航線追蹤儀表板即將上線 — 下一個里程碑會加上訂閱航線的功能。</p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Your dashboard is coming soon. Route-subscription will be added in the next milestone.
-          </p>
+        <p className="mt-3 text-muted-foreground">
+          選一條航線、設定目標價，票價達標時我們會寄信通知你。
+        </p>
+        <div className="mt-8 grid gap-6 sm:grid-cols-2">
+          {PLANS.map((plan) => (
+            <PlanCard key={plan.name} plan={plan} email={user.email ?? ""} />
+          ))}
         </div>
       </main>
     </div>

@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Flight Price Notifier M1 (free notifier). Single stack, us-east-1, no VPC, no SNS.
+  Deploy with `aws cloudformation package` + `deploy` (see infra/README.md): each
+  Lambda's Code points at its local lambdas/<function-name>/ directory.
+
+# Conventions for later tickets:
+# - Add resources here; never create M1 resources by hand.
+# - IAM: every Lambda uses FlightLambdaRole. MERGE new statements into its single
+#   `flight-data` inline policy below; never drop or replace existing statements.
+# - Lambdas: python3.12, handler index.handler, Code: ../lambdas/<function-name>/
+
+Resources:
+  # ---------------------------------------------------------------- DynamoDB
+  SubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: subscriptions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: email, AttributeType: S }
+        - { AttributeName: route, AttributeType: S }
+      KeySchema:
+        - { AttributeName: email, KeyType: HASH }
+        - { AttributeName: route, KeyType: RANGE }
+
+  NotificationHistoryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: notification_history
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S } # "{email}#{route}"
+        - { AttributeName: sent_at, AttributeType: S } # ISO-8601 UTC string
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sent_at, KeyType: RANGE }
+
+  # --------------------------------------------------------------------- IAM
+  FlightLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: flight-lambda-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: flight-data
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: FlightSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flight/*
+              - Sid: FlightTables
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt SubscriptionsTable.Arn
+                  - !GetAtt NotificationHistoryTable.Arn
+
+  # ----------------------------------------------------------------- Lambdas
+  SaveSubscriptionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-save-subscription
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code: ../lambdas/flight-save-subscription/
+
+  # ---------------------------------------------------------------- HTTP API
+  FlightApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: flight-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [content-type]
+        MaxAge: 3600
+
+  FlightApiDefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref FlightApi
+      StageName: $default
+      AutoDeploy: true
+
+  SaveSubscriptionIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FlightApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SaveSubscriptionFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  SubscribeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FlightApi
+      RouteKey: POST /subscribe
+      Target: !Sub integrations/${SaveSubscriptionIntegration}
+
+  SaveSubscriptionApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SaveSubscriptionFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/subscribe
+
+Outputs:
+  ApiBaseUrl:
+    Description: Set the frontend's VITE_FLIGHT_API_URL to this value.
+    Value: !Sub https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com
+  FlightLambdaRoleArn:
+    Value: !GetAtt FlightLambdaRole.Arn
+  SubscriptionsTableName:
+    Value: !Ref SubscriptionsTable
+  NotificationHistoryTableName:
+    Value: !Ref NotificationHistoryTable
