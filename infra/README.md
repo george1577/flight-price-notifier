@@ -46,6 +46,19 @@ in your local `.env.local`, then redeploy the site. See `../.env.example`.
   [import them](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import.html))
   or the stack create fails with "already exists". The tables have
   `DeletionPolicy: Retain`, so deleting the stack keeps your data.
+- **Routes config object.** The stack creates the `flight-config-<account>` bucket but
+  CloudFormation can't put objects in it. After every deploy that changes the routes
+  (and once after the first deploy), upload the committed list:
+
+  ```bash
+  aws s3 cp infra/flight-routes.json s3://flight-config-$ACCOUNT_ID/flight-routes.json \
+    --region us-east-1 --content-type application/json
+  ```
+
+  Until it's uploaded, the `flight-price-check` rule's runs fail with `NoSuchKey`.
+  To add a route, edit `infra/flight-routes.json` and upload it again. No code change
+  is needed. To change how often it runs, change `ScheduleExpression` on
+  `FlightPriceCheckRule` and redeploy.
 - **Secrets.** `flight/*` secrets (`flight/travelpayouts`, `flight/resend`, ...) are
   created in the prerequisites, not here. The role is only granted read access to them.
 
@@ -87,6 +100,16 @@ An empty or 429 TWD answer from Travelpayouts logs "no TWD fare" and enqueues no
 That is a skip, not a failure. Messages you enqueue while testing stay on the queue: **purge
 `flight-fare-queue` before the notifier's event-source mapping is created** so stale test
 messages don't all send at once (`aws sqs purge-queue --queue-url "$QURL"`).
+
+### flight-parser-wrapper (every route, every 30 minutes)
+
+Invoke the wrapper once by hand, then check that the parser logs show both routes:
+
+```bash
+aws lambda invoke --region us-east-1 --function-name flight-parser-wrapper /tmp/wrapper.json
+cat /tmp/wrapper.json   # {"ok": true, "invoked": 2, "routes": ["TPE-TYO", "TPE-SEL"]}
+aws logs tail /aws/lambda/flight-parser --region us-east-1 --since 5m | grep -E 'TPE-(TYO|SEL)'
+```
 
 ## Tests
 

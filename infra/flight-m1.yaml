@@ -89,6 +89,16 @@ Resources:
                   - sqs:SendMessage
                   - sqs:GetQueueUrl
                 Resource: !GetAtt FlightFareQueue.Arn
+              - Sid: FlightConfigObjects # flight-parser-wrapper reads flight-routes.json
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub arn:aws:s3:::flight-config-${AWS::AccountId}/*
+              - Sid: FlightParserInvoke # flight-parser-wrapper fans out per route
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:flight-parser
 
   # ----------------------------------------------------------------- Lambdas
   SaveSubscriptionFunction:
@@ -116,6 +126,56 @@ Resources:
       Environment:
         Variables:
           QUEUE_NAME: !GetAtt FlightFareQueue.QueueName
+
+  # ------------------------------------------------- Scheduled check (#8)
+  # Admin-managed routes list. CFN can't upload objects: after the stack deploys, copy
+  # infra/flight-routes.json into this bucket (see infra/README.md).
+  FlightConfigBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub flight-config-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ParserWrapperFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-parser-wrapper
+      Description: Reads flight-routes.json from S3; async-invokes flight-parser once per route.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code: ../lambdas/flight-parser-wrapper/
+      Environment:
+        Variables:
+          CONFIG_BUCKET: !Ref FlightConfigBucket
+          PARSER_FUNCTION: !Ref ParserFunction
+
+  # Change the check frequency here only (ScheduleExpression); no code change needed.
+  FlightPriceCheckRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: flight-price-check
+      ScheduleExpression: rate(30 minutes)
+      State: ENABLED
+      Targets:
+        - Id: flight-parser-wrapper
+          Arn: !GetAtt ParserWrapperFunction.Arn
+
+  FlightPriceCheckPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ParserWrapperFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt FlightPriceCheckRule.Arn
 
   # ---------------------------------------------------------------- HTTP API
   FlightApi:
@@ -208,3 +268,6 @@ Outputs:
     Value: !Ref NotificationHistoryTable
   FlightFareQueueUrl:
     Value: !Ref FlightFareQueue
+  FlightConfigBucketName:
+    Description: Upload infra/flight-routes.json here after deploy.
+    Value: !Ref FlightConfigBucket
