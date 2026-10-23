@@ -13,7 +13,7 @@ By the end the student has:
 
 1. A v1 landing page (`/`) for **Flight Price Notifier** — a hero (「設定航線與目標價，機票降價就通知你」), three feature cards (盯緊熱門航線 / 達標自動通知 / 隨時取消), a top-right Sign in / 登入 button, a footer — plus an authenticated `/app` shell that greets the signed-in user and shows a "dashboard coming soon" placeholder.
 2. A **GitHub repo** (created by Lovable) holding that code, made **public**.
-3. A **Cowork desktop project** with **AWS API MCP**, **Vercel Connect**, and **Supabase Connector** installed — this is the workbench every later milestone uses.
+3. A **Cowork desktop project** with the **AWS MCP Server**, **Vercel Connect**, and **Supabase Connector** installed — this is the workbench every later milestone uses.
 4. The **GitHub PAT cached in AWS Secrets Manager**, so this and every later session **recall the same token to modify the repo** instead of re-pasting one.
 5. A **live Vercel URL** that auto-deploys the repo on every push.
 6. **Auth wired up** — register / log in / log out. v1 starts on **Lovable Cloud** (fastest path to a working sign-up), then **swaps to the student's own Supabase project**. Either way **auth is the ONLY thing Supabase does** — only the default `auth.users`; no app data ever lives in Supabase (subscriptions go to DynamoDB on AWS from M1.1 on).
@@ -42,7 +42,7 @@ If a student is on a pure local CLI instead, the `aws …` commands shown here a
 |---|---|---|
 | 1 | Lovable (`lovable.dev`) | Generates the v1 UI + scaffolds auth |
 | 2 | GitHub | Lovable creates a repo here; you make it public; Vercel imports from it. A **fine-grained PAT** (single repo, Contents: Write) gets cached in Secrets Manager (Step 6) |
-| 3 | AWS | **Secrets Manager** holds the GitHub token (and, later, the Supabase values) so future sessions reuse them. Reached via the **AWS API MCP** connector (Cowork) or the `[default]` profile (CLI) |
+| 3 | AWS | **Secrets Manager** holds the GitHub token (and, later, the Supabase values) so future sessions reuse them. Reached via the **AWS MCP Server** connector (Cowork) or the `[default]` profile (CLI) |
 | 4 | Vercel | Auto-deploys the GitHub repo; reached via the **Vercel Connect** connector |
 | 5 | Supabase (`supabase.com`) | `auth.users`, sign up / sign in / sign out; reached via the **Supabase Connector** |
 
@@ -171,7 +171,7 @@ This is where the course moves into **Cowork on Desktop** — the workbench ever
 1. In the **AWS Console as the root user** of the course account: **IAM → Users → Create user** (suggested name `admin-for-project-3-flight-price-notifier-001`) → attach **`AdministratorAccess`** → create. Then **Security credentials → Create access key → "Command Line Interface (CLI)"** → copy the **Access key ID + Secret** (shown once).
 2. **Open a Claude Code CLI / desktop session** (not Cowork) and paste this, filling in the two values:
    > I have new AWS credentials I want to configure. Please write them to my AWS credentials file. Access key ID: `XXXXX`. Secret access key: `XXXXX`. First, detect whether I'm on Mac/Linux or Windows to determine the correct credentials file path (`~/.aws/credentials` on Mac/Linux, `%USERPROFILE%\.aws\credentials` on Windows), then write the `[default]` profile with the new values — preserving any other existing profiles in the file. Once done, test the connection using `aws sts get-caller-identity`.
-3. Back in **Cowork → Customize → Connectors → search "AWS API MCP" → Install.**
+3. Back in Cowork: Install the **AWS MCP Server** connector in Cowork: *Customize → Connectors → search "AWS MCP"*. If it isn't listed, add it as a custom MCP server with the `mcp-proxy-for-aws` config in [[aws-best-practice]] *The AWS MCP Server*. Don't install the deprecated **"AWS API MCP"** connector — remove it if present (two AWS servers cause tool conflicts).
 4. Sanity-check from Cowork: *"How many IAM users do I have now on my AWS account?"* — a number means the connector reads the `[default]` creds.
 
 > ⚠️ Root is used **once** (to make the admin user); never use root keys after. Revoke the access key at course end.

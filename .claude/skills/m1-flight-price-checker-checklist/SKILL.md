@@ -9,7 +9,7 @@ Verify the whole free notifier end-to-end, then emit a single **READY for M2** v
 
 ## Execution mode
 
-Mainly **Cowork** — paste checks to the agent with the **AWS API MCP**; CLI runs the same `aws` lines. All commands `--region us-east-1`, `[default]` profile. MCP rules that bite here: **verify by effect** (can't `cat` an `invoke` output file); **`filter-log-events`**, not `logs tail`; **no JMESPath backtick literals** (use `SecretList[].Name`). Ask the student for: the API Gateway base URL, the live Vercel URL, and a real inbox = their **Resend-account email**.
+Mainly **Cowork** — paste checks to the agent with the **AWS MCP Server** connector (it runs them as `call_boto3` API calls via `aws___run_script`); CLI runs the same `aws` lines. All commands `--region us-east-1`, `[default]` profile. MCP rules that bite here: **verify by effect** (can't `cat` an `invoke` output file); **`filter-log-events`**, not `logs tail`; **no JMESPath backtick literals** (use `SecretList[].Name`). Ask the student for: the API Gateway base URL, the live Vercel URL, and a real inbox = their **Resend-account email**.
 
 ## Architecture
 
