@@ -88,6 +88,45 @@ That is a skip, not a failure. Messages you enqueue while testing stay on the qu
 `flight-fare-queue` before the notifier's event-source mapping is created** so stale test
 messages don't all send at once (`aws sqs purge-queue --queue-url "$QURL"`).
 
+### flight-fare-notification (the email)
+
+The template wires `flight-fare-queue` to `flight-fare-notification` with an
+event-source mapping (`FareNotificationQueueMapping`, BatchSize 1). The moment that
+mapping exists it drains the queue, so **purge the queue before the deploy that first
+creates the mapping**. Otherwise stale test matches (e.g. `test@example.com` from the
+parser smoke check) all send at once, the demo sender rejects them with 403s, and the
+burst can push live sends into Resend 429s. On a brand-new stack the queue starts empty,
+so this only matters if the stack was deployed before the mapping was added:
+
+```bash
+QURL=$(aws sqs get-queue-url --region us-east-1 --queue-name flight-fare-queue --query QueueUrl --output text)
+aws sqs purge-queue --region us-east-1 --queue-url "$QURL"
+# purge takes up to 60s; then run the package + deploy commands above
+```
+
+Keep `FlightFareQueue.VisibilityTimeout` (180s) strictly greater than the function's
+`Timeout` (30s), about 6x. Change both together.
+
+The Lambda reads `{"api_key","from"}` from `flight/resend` (`from` stays
+`onboarding@resend.dev` until M3) and caches it per warm container, so after a
+`put-secret-value` force a cold start (any env-var change) before testing. The demo
+sender only delivers to your own Resend-account email, so test with a subscriber whose
+email is that address. If `flight/travelpayouts` has a `marker`, the booking link gets
+`?marker=<id>`; without it the link is plain.
+
+Smoke check: subscribe your Resend-account email with a target above the live fare,
+invoke the parser (see above), then:
+
+```bash
+aws logs tail /aws/lambda/flight-fare-notification --region us-east-1 --since 10m
+aws dynamodb query --region us-east-1 --table-name notification_history \
+  --key-condition-expression 'pk = :p' \
+  --expression-attribute-values '{":p":{"S":"you@example.com#TPE-TYO"}}' --no-scan-index-forward
+```
+
+Expect one email (subject `✈️ 台北 → 東京 降價通知！NT$… 已達標`) and one history row.
+A 403/422 from Resend is logged and dropped (no row); a 429/5xx raises and SQS redelivers.
+
 ## Tests
 
 The Lambdas are tested locally with pytest + moto (no AWS account needed):

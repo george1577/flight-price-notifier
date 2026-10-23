@@ -42,7 +42,7 @@ Resources:
 
   # --------------------------------------------------------------------- SQS
   # Match messages from flight-parser (contract: spec #5). VisibilityTimeout must stay
-  # strictly greater than the consumer Lambda's timeout (~6x; consumer timeout <= 30s).
+  # strictly greater than the consumer Lambda's timeout (~6x: 180s vs FareNotificationFunction's 30s).
   FlightFareQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -89,6 +89,15 @@ Resources:
                   - sqs:SendMessage
                   - sqs:GetQueueUrl
                 Resource: !GetAtt FlightFareQueue.Arn
+              # flight-fare-notification's event-source mapping needs ALL THREE, or it
+              # silently never polls.
+              - Sid: FlightFareQueueConsume
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt FlightFareQueue.Arn
 
   # ----------------------------------------------------------------- Lambdas
   SaveSubscriptionFunction:
@@ -116,6 +125,32 @@ Resources:
       Environment:
         Variables:
           QUEUE_NAME: !GetAtt FlightFareQueue.QueueName
+
+  # flight-fare-queue consumer (ticket #9): one match -> one Resend email -> a
+  # notification_history row. Timeout 30s; keep FlightFareQueue.VisibilityTimeout ~6x.
+  FareNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-fare-notification
+      Description: flight-fare-queue consumer; emails a matched subscriber via Resend.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code: ../lambdas/flight-fare-notification/
+
+  # PURGE flight-fare-queue before this mapping is first created (infra/README.md):
+  # it drains the queue at once, and stale test matches burst into Resend 403s/429s.
+  # BatchSize 1: a raised 429/5xx redelivers only that message (no re-send of batch-mates).
+  FareNotificationQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref FareNotificationFunction
+      EventSourceArn: !GetAtt FlightFareQueue.Arn
+      BatchSize: 1
+      ScalingConfig:
+        MaximumConcurrency: 2 # stays under Resend's 5 req/s
 
   # ---------------------------------------------------------------- HTTP API
   FlightApi:
