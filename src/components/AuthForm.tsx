@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SiteHeader } from "@/components/SiteHeader";
+import { usePageMeta } from "@/hooks/use-page-meta";
 
 export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
   const navigate = useNavigate();
@@ -14,6 +15,12 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
   const [loading, setLoading] = useState(false);
   const [checkEmail, setCheckEmail] = useState(false);
   const isSignUp = mode === "signup";
+  usePageMeta(
+    isSignUp ? "Sign up — Flight Price Notifier" : "Sign in — Flight Price Notifier",
+    isSignUp
+      ? "Create an account and get emailed when fares drop below your budget."
+      : "Sign in to manage your flight price alerts.",
+  );
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -26,7 +33,7 @@ export function AuthForm({ mode }: { mode: "signin" | "signup" }) {
     if (error) return setError(error.message);
     // Email confirmation is on, so sign-up returns no session until the link is clicked.
     if (!data.session) return setCheckEmail(true);
-    navigate({ to: "/app" });
+    navigate("/app");
   }
 
   return (
