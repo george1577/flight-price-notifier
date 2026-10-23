@@ -58,6 +58,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/**
+ * GET /subscriptions?email=: every saved row for this user (empty list if none).
+ * Known gap, accepted for M1: the API trusts this client-sent email; there is no JWT check.
+ */
+export function listSubscriptions(email: string) {
+  return request<Subscription[]>(`/subscriptions?email=${encodeURIComponent(email)}`);
+}
+
 /** POST /subscribe: upsert the target for (email, route). Returns the saved row. */
 export function saveSubscription(input: SubscribeInput) {
   return request<Subscription>("/subscribe", {

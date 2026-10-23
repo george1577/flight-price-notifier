@@ -5,9 +5,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSaveSubscription } from "@/hooks/use-subscriptions";
+import type { Subscription } from "@/lib/flight-api";
 import { formatTwd, parseTargetPrice, type Plan } from "@/lib/plans";
 
-export function PlanCard({ plan, email }: { plan: Plan; email: string }) {
+export function PlanCard({
+  plan,
+  email,
+  subscription,
+}: {
+  plan: Plan;
+  email: string;
+  /** The saved row for this plan's route, if the user is subscribed. */
+  subscription?: Subscription | undefined;
+}) {
   const headingId = useId();
   const inputId = useId();
   const [target, setTarget] = useState("");
@@ -33,7 +43,7 @@ export function PlanCard({ plan, email }: { plan: Plan; email: string }) {
         <span className="grid h-10 w-10 place-items-center rounded-full border-2 border-foreground bg-leaf text-foreground">
           <Plane className="h-5 w-5" />
         </span>
-        <div>
+        <div className="flex-1">
           <h2 id={headingId} className="text-xl tracking-tight">
             {plan.label}
           </h2>
@@ -41,7 +51,16 @@ export function PlanCard({ plan, email }: { plan: Plan; email: string }) {
             目前最低價約 {formatTwd(plan.hintPriceTwd)}
           </p>
         </div>
+        {subscription && (
+          <span className="rounded-full border-2 border-foreground bg-leaf px-2.5 py-0.5 text-xs font-bold">
+            已訂閱
+          </span>
+        )}
       </div>
+
+      {subscription && (
+        <p className="mt-4 text-sm">目前目標價：{formatTwd(subscription.target_price)}</p>
+      )}
 
       <form onSubmit={onSubmit} noValidate className="mt-5 space-y-3">
         <div className="space-y-2">
@@ -66,7 +85,7 @@ export function PlanCard({ plan, email }: { plan: Plan; email: string }) {
           </p>
         )}
         <Button type="submit" variant="hero" className="w-full" disabled={save.isPending}>
-          開始追蹤
+          {subscription ? "更新目標價" : "開始追蹤"}
         </Button>
       </form>
     </section>
