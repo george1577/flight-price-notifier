@@ -31,9 +31,9 @@ The four credentials you confirm/collect here are what make this diagram run:
   Match case-insensitively on substrings, not exact names. If two candidates match (e.g. a stray duplicate), read both and prefer the one whose shape is right; mention the ambiguity to the student rather than guessing silently.
 - **Tolerate the *shape*, not just the name.** A past M0 run may have stored a credential as **bare-string** rather than JSON (real example: `github/personal-access-token` holds the raw `github_pat_…`, not `{"pat":…}`), or used a different field name (`anon_key` vs `publishable_key`). So **don't hard-fail on a `json.load`** — if it doesn't parse as JSON, treat the raw value as the credential; and match key fields by their value pattern, not an exact field name. Identify the secret by *what the value looks like*, not its envelope.
 - **One part at a time, conversationally.** End each part by confirming success and announcing the next part. Never ask for two different keys in the same message.
-- **You run all the AWS/git commands** via the AWS API MCP + git tool. The student never runs `aws` themselves.
+- **You run all the AWS/git commands** via the AWS MCP Server connector + git tool. The student never runs `aws` themselves.
 - **Every AWS command:** `--region us-east-1`, `[default]` profile (no `--profile`).
-- **Read [[aws-best-practice]] *Cowork execution constraints* once** before you deploy anything. Two facts shape this skill: (1) the common AWS connector is **`aws`-only** (no shell/`zip`/file authoring) → Lambda code deploys via **inline CFN** (small) or the **`flight-seed` S3 bridge** (big); (2) the **sandbox can't reach arbitrary hosts** (`api.resend.com` is proxy-blocked) → anything that POSTs to a third party runs **from a Lambda**, not the sandbox. This is why Resend is verified from a Lambda (Part D).
+- **Read [[aws-best-practice]] *Cowork execution constraints* once** before you deploy anything. Two facts shape this skill: (1) the AWS connector is **not a shell** (the AWS MCP Server runs Python + `call_boto3` remotely; no `zip`, no local files) → Lambda code deploys via **inline CFN** (small) or the **`flight-seed` S3 bridge** (big); (2) the **sandbox can't reach arbitrary hosts** (`api.resend.com` is proxy-blocked) → anything that POSTs to a third party runs **from a Lambda**, not the sandbox. This is why Resend is verified from a Lambda (Part D).
 
 **The four secrets M1 relies on — two are M0 carryovers, two are new here.** The "looks like" column is what you scan `list-secrets` for; the M0 ones may sit under *any* name the M0 run chose, so match by substring + shape, not exact name:
 
@@ -81,7 +81,7 @@ This is the only part the student does outside Cowork — because writing `~/.aw
 
 **Tell the student, step by step (pause between):**
 
-1. **Install the AWS API MCP connector** in Cowork: *Customize → Connectors → search "AWS API MCP" → Install.*
+1. Install the **AWS MCP Server** connector in Cowork: *Customize → Connectors → search "AWS MCP"*. If it isn't listed, add it as a custom MCP server with the `mcp-proxy-for-aws` config in [[aws-best-practice]] *The AWS MCP Server*. Don't install the deprecated **"AWS API MCP"** connector — remove it if present (two AWS servers cause tool conflicts).
 2. **In the AWS Console, as the root user** of their course account:
    - **IAM → Users → Create user** (suggest `admin-for-cowork`) → attach **`AdministratorAccess`** → create.
    - That user → **Security credentials → Create access key → "Command Line Interface (CLI)"** → copy the **Access key ID + Secret** (shown once).

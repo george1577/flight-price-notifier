@@ -1,17 +1,25 @@
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { LogOut, Radar } from "lucide-react";
+import { CloudOff, LogOut } from "lucide-react";
+import { PlanCard } from "@/components/PlanCard";
+import { PLANS } from "@/lib/plans";
 import { supabase } from "@/integrations/supabase/client";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/SiteHeader";
 import { useAuthUser } from "@/components/RequireAuth";
 import { usePageMeta } from "@/hooks/use-page-meta";
+import { useSubscriptions } from "@/hooks/use-subscriptions";
 
 export default function AppPage() {
   usePageMeta("Dashboard — Flight Price Notifier", "Your flight price tracking dashboard.");
   const user = useAuthUser();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const email = user.email ?? "";
+  // If the list request fails, `data` stays undefined: every plan renders unsubscribed (still
+  // usable) and a non-blocking notice says the saved subscriptions couldn't be loaded.
+  const { data: subscriptions, isError: loadFailed } = useSubscriptions(email);
 
   async function signOut() {
     await queryClient.cancelQueries();
@@ -31,14 +39,27 @@ export default function AppPage() {
       />
       <main className="mx-auto max-w-3xl px-5 py-20 animate-fade-up">
         <h1 className="break-all text-3xl tracking-tight sm:text-4xl">Hi {user.email}</h1>
-        <div className="specimen mt-8 rounded-2xl p-8">
-          <span className="grid h-11 w-11 place-items-center rounded-full border-2 border-foreground bg-leaf text-foreground">
-            <Radar className="h-5 w-5" />
-          </span>
-          <p className="mt-5 text-lg">你的航線追蹤儀表板即將上線 — 下一個里程碑會加上訂閱航線的功能。</p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Your dashboard is coming soon. Route-subscription will be added in the next milestone.
-          </p>
+        <p className="mt-3 text-muted-foreground">
+          選一條航線、設定目標價，票價達標時我們會寄信通知你。
+        </p>
+        {loadFailed && (
+          <Alert className="mt-6 rounded-2xl border-2 border-dashed border-foreground bg-marigold/30 text-foreground">
+            <CloudOff className="h-4 w-4" />
+            <AlertTitle>無法載入你的訂閱</AlertTitle>
+            <AlertDescription>
+              已訂閱的航線暫時顯示為未訂閱。你仍可設定目標價，或稍後重新整理頁面。
+            </AlertDescription>
+          </Alert>
+        )}
+        <div className="mt-8 grid gap-6 sm:grid-cols-2">
+          {PLANS.map((plan) => (
+            <PlanCard
+              key={plan.name}
+              plan={plan}
+              email={email}
+              subscription={subscriptions?.find((s) => s.route === plan.route)}
+            />
+          ))}
         </div>
       </main>
     </div>
