@@ -61,6 +61,26 @@ aws dynamodb get-item --region us-east-1 --table-name subscriptions \
 
 Expect `route=TPE-TYO`, `currency=TWD`, `target_price=10000`, no `subscription_status`.
 
+### flight-parser (one route)
+
+Give the test subscriber a target above the live fare, invoke the parser for its
+route, then check the queue depth went up and the logs show the cheapest fare and the
+match count:
+
+```bash
+aws lambda invoke --region us-east-1 --function-name flight-parser \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"origin":"TPE","destination":"TYO","route":"TPE-TYO"}' /tmp/parser.json
+QURL=$(aws sqs get-queue-url --region us-east-1 --queue-name flight-fare-queue --query QueueUrl --output text)
+aws sqs get-queue-attributes --region us-east-1 --queue-url "$QURL" \
+  --attribute-names ApproximateNumberOfMessages
+```
+
+An empty or 429 TWD answer from Travelpayouts logs "no TWD fare" and enqueues nothing.
+That is a skip, not a failure. Messages you enqueue while testing stay on the queue: **purge
+`flight-fare-queue` before the notifier's event-source mapping is created** so stale test
+messages don't all send at once (`aws sqs purge-queue --queue-url "$QURL"`).
+
 ## Tests
 
 The Lambdas are tested locally with pytest + moto (no AWS account needed):

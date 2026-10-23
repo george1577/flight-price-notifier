@@ -40,6 +40,16 @@ Resources:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sent_at, KeyType: RANGE }
 
+  # --------------------------------------------------------------------- SQS
+  # Match messages from flight-parser (contract: spec #5). VisibilityTimeout must stay
+  # strictly greater than the consumer Lambda's timeout (~6x; consumer timeout <= 30s).
+  FlightFareQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: flight-fare-queue
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600 # 4 days
+
   # --------------------------------------------------------------------- IAM
   FlightLambdaRole:
     Type: AWS::IAM::Role
@@ -73,6 +83,12 @@ Resources:
                 Resource:
                   - !GetAtt SubscriptionsTable.Arn
                   - !GetAtt NotificationHistoryTable.Arn
+              - Sid: FlightFareQueueSend # flight-parser enqueues matches
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueUrl
+                Resource: !GetAtt FlightFareQueue.Arn
 
   # ----------------------------------------------------------------- Lambdas
   SaveSubscriptionFunction:
@@ -85,6 +101,21 @@ Resources:
       Timeout: 10
       MemorySize: 128
       Code: ../lambdas/flight-save-subscription/
+
+  ParserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-parser
+      Description: One route per invocation; cheapest Travelpayouts fare -> flight-fare-queue matches.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Code: ../lambdas/flight-parser/
+      Environment:
+        Variables:
+          QUEUE_NAME: !GetAtt FlightFareQueue.QueueName
 
   # ---------------------------------------------------------------- HTTP API
   FlightApi:
@@ -138,3 +169,5 @@ Outputs:
     Value: !Ref SubscriptionsTable
   NotificationHistoryTableName:
     Value: !Ref NotificationHistoryTable
+  FlightFareQueueUrl:
+    Value: !Ref FlightFareQueue
