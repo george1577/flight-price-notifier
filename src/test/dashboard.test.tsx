@@ -82,8 +82,19 @@ let documentCalls: string[];
 
 type Reply = Response | Error | (() => Response | Promise<Response>);
 
-/** Route fetch calls: GET /subscriptions → `list` (default: none), POST /subscribe → `subscribe`. */
-function mockApi({ list = [], subscribe }: { list?: unknown[] | Reply; subscribe?: Reply }) {
+/**
+ * Route fetch calls: GET /subscriptions → `list` (default: none), POST /subscribe →
+ * `subscribe`, POST /cancel → `cancel`.
+ */
+function mockApi({
+  list = [],
+  subscribe,
+  cancel,
+}: {
+  list?: unknown[] | Reply;
+  subscribe?: Reply;
+  cancel?: Reply;
+}) {
   const reply = (r: Reply | undefined) => {
     if (r === undefined) return Promise.reject(new Error("unexpected request"));
     if (r instanceof Error) return Promise.reject(r);
@@ -95,6 +106,7 @@ function mockApi({ list = [], subscribe }: { list?: unknown[] | Reply; subscribe
       return reply(Array.isArray(list) ? jsonResponse(200, list) : list);
     }
     if (url.endsWith("/subscribe")) return reply(subscribe);
+    if (url.endsWith("/cancel")) return reply(cancel);
     return Promise.reject(new Error(`unexpected request ${url}`));
   });
 }
@@ -457,5 +469,127 @@ describe("Dashboard activation after paying", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(listRequests()).toHaveLength(1);
+  });
+});
+
+describe("Dashboard cancel and grace period", () => {
+  /** A paid row with its period: `active` by default. */
+  function paidRow(status: string, periodEnd: string, target = 10000) {
+    return {
+      ...savedRow("tokyo", "TPE-TYO", target, status),
+      current_period_end: periodEnd,
+      current_period_end_date: periodEnd.slice(0, 10),
+    };
+  }
+
+  function cancelRequests() {
+    return (fetchMock.mock.calls as [string, RequestInit][]).filter(([url]) =>
+      url.endsWith("/cancel"),
+    );
+  }
+
+  it("取消訂閱 asks first, then cancels and shows 已取消 · 有效至 the paid-through date", async () => {
+    mockApi({
+      list: [paidRow("active", "2999-11-24T03:05:00Z")],
+      cancel: jsonResponse(200, {
+        ...paidRow("cancelled", "2999-11-24T03:05:00Z"),
+        cancelled_at: "2026-11-02T08:00:00Z",
+      }),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.click(await within(tokyo).findByRole("button", { name: "取消訂閱" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/有效至 2999-11-24/);
+    expect(cancelRequests()).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "確認取消" }));
+
+    expect(await within(tokyo).findByText("已取消 · 有效至 2999-11-24")).toBeInTheDocument();
+    expect(within(tokyo).queryByText("已訂閱 (有效)")).not.toBeInTheDocument();
+    expect(within(tokyo).queryByRole("button", { name: "取消訂閱" })).not.toBeInTheDocument();
+    expect(within(tokyo).getByRole("button", { name: "更新目標價" })).toBeInTheDocument();
+    const [url, init] = cancelRequests()[0] ?? [];
+    expect(url).toBe(`${API}/cancel`);
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ email: "amy@example.com", route: "TPE-TYO" });
+    expect(listRequests()).toHaveLength(1);
+  });
+
+  it("keeps the subscription when the confirmation is dismissed", async () => {
+    mockApi({ list: [paidRow("active", "2999-11-24T03:05:00Z")] });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.click(await within(tokyo).findByRole("button", { name: "取消訂閱" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "保留訂閱" }),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(cancelRequests()).toHaveLength(0);
+    expect(within(tokyo).getByText("已訂閱 (有效)")).toBeInTheDocument();
+  });
+
+  it("shows the API's message when the cancel fails, and stays active", async () => {
+    mockApi({
+      list: [paidRow("active", "2999-11-24T03:05:00Z")],
+      cancel: jsonResponse(502, { message: "Could not reach ECPay" }),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.click(await within(tokyo).findByRole("button", { name: "取消訂閱" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "確認取消" }),
+    );
+
+    expect(await within(tokyo).findByText(/取消失敗：Could not reach ECPay/)).toBeInTheDocument();
+    expect(within(tokyo).getByText("已訂閱 (有效)")).toBeInTheDocument();
+    expect(within(tokyo).getByRole("button", { name: "取消訂閱" })).toBeInTheDocument();
+  });
+
+  it("a cancelled plan inside its paid period can still update its target, and can't be cancelled", async () => {
+    mockApi({
+      list: [paidRow("cancelled", "2999-11-24T03:05:00Z")],
+      subscribe: jsonResponse(200, paidRow("cancelled", "2999-11-24T03:05:00Z", 8000)),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    expect(await within(tokyo).findByText("已取消 · 有效至 2999-11-24")).toBeInTheDocument();
+    expect(within(tokyo).queryByRole("button", { name: "取消訂閱" })).not.toBeInTheDocument();
+    expect(within(tokyo).queryByText("已結束")).not.toBeInTheDocument();
+
+    fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "8000" } });
+    fireEvent.click(within(tokyo).getByRole("button", { name: "更新目標價" }));
+
+    expect(await within(tokyo).findByText(/目前目標.*NT\$8,000/)).toBeInTheDocument();
+    expect(within(tokyo).getByText("已取消 · 有效至 2999-11-24")).toBeInTheDocument();
+    expect(documentCalls).toEqual([]);
+  });
+
+  it.each([
+    ["an expired plan", "expired", "2020-01-01T00:00:00Z"],
+    ["a cancelled plan past its paid period", "cancelled", "2020-01-01T00:00:00Z"],
+  ])("shows %s as 已結束, and 重新訂閱 goes back through checkout", async (_label, status, end) => {
+    mockApi({ list: [paidRow(status, end)], subscribe: checkoutResponse() });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    expect(await within(tokyo).findByText("已結束")).toBeInTheDocument();
+    expect(within(tokyo).queryByText(/已取消/)).not.toBeInTheDocument();
+    expect(within(tokyo).queryByText(/已訂閱/)).not.toBeInTheDocument();
+    expect(within(tokyo).queryByRole("button", { name: "取消訂閱" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(tokyo).getByRole("button", { name: "重新訂閱" }));
+
+    await waitFor(() => expect(documentWrites).toEqual([CHECKOUT_HTML]));
+    expect(sentBody()).toEqual({
+      email: "amy@example.com",
+      plan_name: "tokyo",
+      target_price: 10000,
+    });
   });
 });

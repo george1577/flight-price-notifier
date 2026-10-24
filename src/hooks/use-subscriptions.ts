@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  cancelSubscription,
   isUnpaid,
   listSubscriptions,
   openCashier,
@@ -12,6 +13,7 @@ import {
   type SubscribeInput,
   type Subscription,
 } from "@/lib/flight-api";
+import type { Route } from "@/lib/plans";
 
 export const subscriptionsKey = (email: string) => ["subscriptions", email] as const;
 
@@ -60,6 +62,22 @@ export function useSaveSubscription(email: string) {
       }
       queryClient.setQueryData<Subscription[]>(subscriptionsKey(email), (list) =>
         upsertSubscription(list, result.subscription),
+      );
+    },
+  });
+}
+
+/**
+ * Cancel a paid plan (POST /cancel) and upsert the returned `cancelled` row into the cached
+ * list, so the card switches to 已取消 · 有效至 without a refetch.
+ */
+export function useCancelSubscription(email: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (route: Route) => cancelSubscription({ email, route }),
+    onSuccess: (cancelled) => {
+      queryClient.setQueryData<Subscription[]>(subscriptionsKey(email), (list) =>
+        upsertSubscription(list, cancelled),
       );
     },
   });
