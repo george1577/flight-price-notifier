@@ -23,15 +23,28 @@ def sqs_event(*bodies):
     }
 
 
-def welcome(email="amy@example.com", route="TPE-TYO", plan="tokyo"):
-    return {"event_type": "welcome", "email": email, "route": route, "plan_name": plan}
+TRADE_NO = "FP2610241200001A2B3C"
+CANCELLED_AT = "2026-11-02T08:00:00Z"
 
 
-def cancel(email="amy@example.com", route="TPE-TYO", plan="tokyo", period_end_date="2026-11-24"):
+def welcome(email="amy@example.com", route="TPE-TYO", plan="tokyo", trade_no=TRADE_NO):
+    return {"event_type": "welcome", "email": email, "route": route, "plan_name": plan, "merchant_trade_no": trade_no}
+
+
+def cancel(email="amy@example.com", route="TPE-TYO", plan="tokyo", period_end_date="2026-11-24",
+           cancelled_at=CANCELLED_AT):
     return {
         "event_type": "cancel", "email": email, "route": route, "plan_name": plan,
-        "current_period_end_date": period_end_date,
+        "current_period_end_date": period_end_date, "cancelled_at": cancelled_at,
     }
+
+
+def subscriber(table, **overrides):
+    """The subscriber's row, which records which welcome / cancel email has been sent."""
+    item = {"email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo",
+            "subscription_status": "active", "merchant_trade_no": TRADE_NO, **overrides}
+    table.put_item(Item=item)
+    return item
 
 
 class FakeResend:
@@ -56,7 +69,7 @@ class FakeResend:
 
 
 @pytest.fixture
-def secrets(ecpay_secret):
+def secrets(ecpay_secret, subscriptions_table):
     ecpay_secret.create_secret(
         Name="flight/resend", SecretString=json.dumps({"api_key": "re_test", "from": "onboarding@resend.dev"})
     )
@@ -175,3 +188,67 @@ def test_a_permanent_resend_failure_is_logged_and_dropped(monkeypatch, secrets, 
     assert result["results"] == ["dropped"]
     assert len(resend.requests) == 1
     assert str(status) in capsys.readouterr().out
+
+
+# ------------------------------------------------------- SQS redelivery
+
+
+@pytest.mark.parametrize("message", [welcome(), cancel()], ids=["welcome", "cancel"])
+def test_a_redelivered_status_message_is_emailed_once(monkeypatch, secrets, subscriptions_table, message):
+    subscriber(subscriptions_table)
+    fn, resend = setup(monkeypatch)
+
+    first = fn.handler(sqs_event(message), None)
+    second = fn.handler(sqs_event(message), None)
+
+    assert (first["results"], second["results"]) == (["sent"], ["duplicate"])
+    assert len(resend.requests) == 1
+
+
+def test_a_new_subscription_gets_its_own_welcome(monkeypatch, secrets, subscriptions_table):
+    # A re-subscriber's new checkout has a new trade number, so its welcome is not a repeat.
+    subscriber(subscriptions_table)
+    fn, resend = setup(monkeypatch)
+    fn.handler(sqs_event(welcome(trade_no="FP2609011200001OLD00")), None)
+
+    result = fn.handler(sqs_event(welcome()), None)
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 2
+
+
+def test_a_later_cancel_gets_its_own_email(monkeypatch, secrets, subscriptions_table):
+    subscriber(subscriptions_table)
+    fn, resend = setup(monkeypatch)
+    fn.handler(sqs_event(cancel(cancelled_at="2026-10-02T08:00:00Z")), None)
+
+    result = fn.handler(sqs_event(cancel()), None)
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 2
+
+
+@pytest.mark.parametrize("message", [welcome(), cancel()], ids=["welcome", "cancel"])
+def test_a_failed_send_is_not_recorded_so_the_redelivery_sends_it(monkeypatch, secrets, subscriptions_table, message):
+    subscriber(subscriptions_table)
+    fn, resend = setup(monkeypatch, failure=503)
+    with pytest.raises(Exception):
+        fn.handler(sqs_event(message), None)
+
+    resend.failure = None
+    result = fn.handler(sqs_event(message), None)
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 2
+
+
+def test_a_message_without_its_identity_is_still_sent(monkeypatch, secrets, subscriptions_table):
+    # Enqueued before the identity fields existed: nothing to dedup on, so send it.
+    subscriber(subscriptions_table)
+    fn, resend = setup(monkeypatch)
+    legacy = {k: v for k, v in welcome().items() if k != "merchant_trade_no"}
+
+    fn.handler(sqs_event(legacy), None)
+    fn.handler(sqs_event(legacy), None)
+
+    assert len(resend.requests) == 2

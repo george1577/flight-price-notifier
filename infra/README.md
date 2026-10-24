@@ -67,7 +67,7 @@ in your local `.env.local`, then redeploy the site. See `../.env.example`.
   Until it's uploaded, the `flight-price-check` rule's runs fail with `NoSuchKey`.
   To add a route, edit `infra/flight-routes.json` and upload it again (the scheduled
   check needs no code change, but see "Deliberate duplication" below for the other
-  three places a new route must be added). To change how often it runs, change `ScheduleExpression` on
+  four places a new route must be added). To change how often it runs, change `ScheduleExpression` on
   `FlightPriceCheckRule` and redeploy.
 
 - **Secrets.** `flight/*` secrets (`flight/travelpayouts`, `flight/resend`, `flight/ecpay`)
@@ -98,14 +98,15 @@ email renderer inline in `flight-fare-notification`. Small helpers (logging, TWD
 formatting, route/city lookups) are therefore duplicated across Lambdas on purpose; do
 not factor them into a shared module.
 
-The route list lives in four places that **must change together** when you add a route:
+The route list lives in five places that **must change together** when you add a route:
 
 1. `src/lib/plans.ts` (the dashboard cards)
 2. `PLANS` in `lambdas/flight-save-subscription/index.py` (which `plan_name`s POST /subscribe accepts)
 3. `infra/flight-routes.json` (what the scheduled check fetches; re-upload it to S3)
-4. `CITY_NAMES` in `lambdas/flight-fare-notification/index.py` (city names in the email)
+4. `CITY_NAMES` in `lambdas/flight-fare-notification/index.py` (city names in the price alert)
+5. `CITY_NAMES` in `lambdas/flight-status-notification/index.py` (city names in the welcome / cancel email)
 
-`lambdas/tests/test_route_tables.py` fails if these four drift apart.
+`lambdas/tests/test_route_tables.py` fails if any of these five drift apart.
 
 The ECPay CheckMacValue helper (`check_mac_value`) is duplicated the same way into every
 Lambda that signs or verifies ECPay requests. When you copy it into a new Lambda, add the
@@ -286,12 +287,16 @@ A 403/422 from Resend is logged and dropped (no row); a 429/5xx raises and SQS r
 
 ### flight-status-notification (welcome / cancel email, M2)
 
-`flight-ecpay-return` puts one `{"event_type":"welcome","email","route","plan_name"}`
+`flight-ecpay-return` puts one `{"event_type":"welcome","email","route","plan_name","merchant_trade_no"}`
 message on `flight-status-queue` per successful activation. ECPay resends and
 `SimulatePaid=1` enqueue nothing. `flight-status-notification` (BatchSize 1) emails it
 with the same Resend rules as the fare alert. The NT$ monthly price comes from
 `flight/ecpay`'s `amount`, and both secrets are cached per warm container. `cancel`
-messages (route + `current_period_end_date`, shown as 有效至) use the same consumer.
+messages (route + `current_period_end_date`, shown as 有效至, + `cancelled_at`) use the
+same consumer. SQS can deliver a message twice, so after a send the consumer records the
+trade number (`welcome_sent_for`) or `cancelled_at` (`cancel_email_sent_for`) on the
+subscription row and skips a redelivery that matches. A message without those fields is
+always sent.
 
 Smoke check without a card: send a synthetic welcome addressed to your Resend-account email.
 

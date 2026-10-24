@@ -158,9 +158,10 @@ def test_enqueues_one_cancel_email_with_the_paid_through_date(subscriptions_tabl
 
     cancel(AMY)
 
+    cancelled_at = get_row(subscriptions_table)["cancelled_at"]  # identifies this cancel for the consumer's dedup
     assert status_queue() == [{
         "event_type": "cancel", "email": "amy@example.com", "route": "TPE-TYO",
-        "plan_name": "tokyo", "current_period_end_date": "2026-11-24",
+        "plan_name": "tokyo", "current_period_end_date": "2026-11-24", "cancelled_at": cancelled_at,
     }]
 
 

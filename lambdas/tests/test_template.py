@@ -236,6 +236,18 @@ def test_status_queue_permissions_are_least_privilege_on_its_own_arn(template):
     assert statement(template, "FlightFareQueueConsume")["Resource"] == {"Fn::GetAtt": "FlightFareQueue.Arn"}
 
 
+def test_status_notifier_can_read_and_mark_the_subscription_row_without_a_wider_grant(template):
+    # flight-status-notification GetItems the row and UpdateItems its sent-email marker. The
+    # shared role's FlightTables statement already covers both; no other statement grants DynamoDB.
+    dynamodb = [s for s in flight_data_statements(template) if "dynamodb:" in str(s["Action"])]
+
+    assert [s["Sid"] for s in dynamodb] == ["FlightTables"]
+    (tables,) = dynamodb
+    assert {"dynamodb:GetItem", "dynamodb:UpdateItem"} <= set(actions(tables))
+    assert {"Fn::GetAtt": "SubscriptionsTable.Arn"} in tables["Resource"]
+    assert "*" not in str(tables["Resource"])
+
+
 def test_ecpay_return_is_told_the_status_queue_name(template):
     env = function_named(template, "flight-ecpay-return")["Properties"]["Environment"]["Variables"]
 

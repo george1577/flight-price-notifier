@@ -37,8 +37,7 @@ export type Subscription = {
 
 /** Unpaid: never activated, or a legacy M1 row with no status. Alerts are off. */
 export function isUnpaid(subscription: Subscription) {
-  const status = subscription.subscription_status;
-  return status === undefined || status === "pending_payment";
+  return paymentState(subscription) === "unpaid";
 }
 
 /**
@@ -56,8 +55,8 @@ export function paymentState(subscription: Subscription, now: Date = new Date())
       return "active";
     case "cancelled": {
       const end = Date.parse(subscription.current_period_end ?? "");
-      // The cancel Lambda always sets a period end; if one is somehow missing, show it as paid.
-      return Number.isNaN(end) || end >= now.getTime() ? "grace" : "ended";
+      // No period end counts as lapsed, as in the parser's paywall (it then gets no alerts).
+      return end >= now.getTime() ? "grace" : "ended";
     }
     case "expired":
       return "ended";

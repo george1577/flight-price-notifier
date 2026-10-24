@@ -1,10 +1,11 @@
 """flight-status-notification: SQS consumer of `flight-status-queue`, one status change -> one email.
 
 Message contract (spec #16): {event_type: "welcome" | "cancel", email, route, plan_name?,
-current_period_end_date?}. The producers send at most one message per state change
-(flight-ecpay-return only after its conditional activation succeeds), so this consumer
-does no dedup of its own. `event_type` picks the template; an unknown one is logged and
-dropped.
+current_period_end_date?, merchant_trade_no? (welcome), cancelled_at? (cancel)}. The
+producers send at most one message per state change, but SQS may deliver it twice: the
+trade number / cancelled_at identifies the change, and the subscription row records which
+one has been emailed (see "redelivery" below). `event_type` picks the template; an unknown
+one is logged and dropped.
 
 Resend usage is the same as flight-fare-notification (constants, User-Agent, send_email
 are copied on purpose: no shared module):
@@ -32,6 +33,7 @@ DROP_STATUSES = {403, 422}
 CITY_NAMES = {"TPE": "台北", "TYO": "東京", "SEL": "首爾", "LON": "倫敦"}
 
 secrets = boto3.client("secretsmanager")
+table = boto3.resource("dynamodb").Table("subscriptions")
 _resend = None  # cached per warm container; changing the secret needs a cold start
 _amount = None
 
@@ -48,12 +50,48 @@ def notify(msg):
     if template is None:
         log(event_type=event_type, to=email, route=route, note="unknown event_type - dropped")
         return "dropped"
+    record_attr, sent_id = SENT_MARKERS[event_type], msg.get(IDENTITY_FIELDS[event_type])
+    if sent_id and already_sent(email, route, record_attr, sent_id):
+        log(event_type=event_type, to=email, route=route, sent_id=sent_id, note="already sent - SQS redelivery skipped")
+        return "duplicate"
     subject, html_body, text_body = template(msg)
     status = send_email(to=email, subject=subject, html=html_body, text=text_body)
     if status is None:
         return "dropped"
     log(event_type=event_type, to=email, route=route, http_status=status, note="sent")
+    if sent_id:
+        record_sent(email, route, record_attr, sent_id)
     return "sent"
+
+
+# ---------------------------------------------------------------- redelivery
+# SQS delivers at least once, so the same message can arrive twice. Each message names the
+# state change it announces (IDENTITY_FIELDS); once its email is sent, that value is
+# recorded on the subscription row (SENT_MARKERS) and a redelivery of it is skipped. A
+# message without the field (enqueued before it existed) is always sent.
+IDENTITY_FIELDS = {"welcome": "merchant_trade_no", "cancel": "cancelled_at"}
+SENT_MARKERS = {"welcome": "welcome_sent_for", "cancel": "cancel_email_sent_for"}
+
+
+def already_sent(email, route, record_attr, sent_id):
+    row = table.get_item(Key={"email": email, "route": route}).get("Item") or {}
+    return row.get(record_attr) == sent_id
+
+
+def record_sent(email, route, record_attr, sent_id):
+    """Mark this email sent. A failure is logged, not raised: the email is already out, and
+    raising would make SQS redeliver it."""
+    try:
+        table.update_item(
+            Key={"email": email, "route": route},
+            UpdateExpression="SET #sent = :sent_id",
+            ConditionExpression="attribute_exists(email)",  # never create a row for a deleted subscription
+            ExpressionAttributeNames={"#sent": record_attr},
+            ExpressionAttributeValues={":sent_id": sent_id},
+        )
+    except Exception as err:
+        log(to=email, route=route, sent_id=sent_id, detail=str(err),
+            note="email sent but not recorded; a redelivery would send it again")
 
 
 # ---------------------------------------------------------------- templates

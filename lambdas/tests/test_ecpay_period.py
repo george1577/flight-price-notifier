@@ -270,6 +270,38 @@ def test_a_paid_renewal_after_failures_resets_the_count(ecpay_period, subscripti
     assert (row["failed_charge_count"], row["subscription_status"]) == (0, "active")
 
 
+def test_a_resent_failure_is_counted_once(ecpay_period, subscriptions_table, capsys):
+    active_row(subscriptions_table, failed_charge_count=4)
+    failure = signed(declined())
+
+    assert_ok(post(ecpay_period, failure))
+    assert_ok(post(ecpay_period, failure))
+
+    row = get_row(subscriptions_table)
+    assert (row["failed_charge_count"], row["subscription_status"]) == (5, "active")
+    assert "resend" in capsys.readouterr().out
+
+
+def test_ecpay_retrying_the_card_on_another_day_counts_again(ecpay_period, subscriptions_table):
+    active_row(subscriptions_table)
+
+    assert_ok(post(ecpay_period, signed(declined(ProcessDate="2026/11/24 12:00:30"))))
+    assert_ok(post(ecpay_period, signed(declined(ProcessDate="2026/11/25 12:00:30"))))
+
+    assert get_row(subscriptions_table)["failed_charge_count"] == 2
+
+
+def test_a_failure_with_no_process_date_is_always_counted(ecpay_period, subscriptions_table):
+    # Nothing identifies the charge, so a resend can't be told apart: count it.
+    active_row(subscriptions_table)
+    failure = signed(declined(ProcessDate=None))
+
+    assert_ok(post(ecpay_period, failure))
+    assert_ok(post(ecpay_period, failure))
+
+    assert get_row(subscriptions_table)["failed_charge_count"] == 2
+
+
 def test_a_failure_for_another_order_does_not_count(ecpay_period, subscriptions_table):
     before = active_row(subscriptions_table, merchant_trade_no="FP2612011200009Z9Z9Z", failed_charge_count=5)
 

@@ -95,6 +95,8 @@ Resources:
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flight/*
+              # Also covers flight-status-notification (M2): GetItem + UpdateItem on
+              # subscriptions to skip and record sent welcome/cancel emails.
               - Sid: FlightTables
                 Effect: Allow
                 Action:

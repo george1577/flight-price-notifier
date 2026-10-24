@@ -66,8 +66,10 @@ def enqueue_welcome(row):
     """One `welcome` message on flight-status-queue (contract: spec #16). A failure is logged,
     not raised: the row is already active, so an ECPay retry could not re-send it anyway."""
     message = {"event_type": "welcome", "email": row["email"], "route": row["route"]}
-    if row.get("plan_name"):
-        message["plan_name"] = row["plan_name"]
+    # merchant_trade_no identifies this activation: flight-status-notification skips a redelivery of it.
+    for key in ("plan_name", "merchant_trade_no"):
+        if row.get(key):
+            message[key] = row[key]
     try:
         sqs.send_message(QueueUrl=status_queue_url(), MessageBody=json.dumps(message, ensure_ascii=False))
     except Exception as err:
@@ -100,7 +102,7 @@ def activate(email, route, trade_no, fields):
             Key=key,
             UpdateExpression=(
                 "SET subscription_status = :active, merchant_trade_no = :trade_no, activated_at = :now,"
-                " last_charged_at = :now, total_success_times = :times,"
+                " last_charged_at = :now, total_success_times = :times, failed_charge_count = :zero,"
                 " current_period_end = :period_end, current_period_end_date = :period_end_date"
             ),
             # Only an unpaid row: never re-stamp an active row (a resend) or revive a
@@ -115,6 +117,7 @@ def activate(email, route, trade_no, fields):
                 ":trade_no": trade_no,
                 ":now": now.strftime(TIME_FORMAT),
                 ":times": int(fields.get("TotalSuccessTimes") or 1),
+                ":zero": 0,  # a re-subscriber must not inherit an earlier series' declines
                 ":period_end": period_end.strftime(TIME_FORMAT),
                 ":period_end_date": period_end.strftime("%Y-%m-%d"),
             },

@@ -573,8 +573,11 @@ describe("Dashboard cancel and grace period", () => {
   it.each([
     ["an expired plan", "expired", "2020-01-01T00:00:00Z"],
     ["a cancelled plan past its paid period", "cancelled", "2020-01-01T00:00:00Z"],
+    // The parser gets no alerts for it either (its paywall compares a missing date as past).
+    ["a cancelled plan with no paid-through date", "cancelled", undefined],
   ])("shows %s as 已結束, and 重新訂閱 goes back through checkout", async (_label, status, end) => {
-    mockApi({ list: [paidRow(status, end)], subscribe: checkoutResponse() });
+    const row = end ? paidRow(status, end) : savedRow("tokyo", "TPE-TYO", 10000, status);
+    mockApi({ list: [row], subscribe: checkoutResponse() });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
