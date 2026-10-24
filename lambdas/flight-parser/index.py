@@ -1,10 +1,15 @@
 """flight-parser: handle ONE route per invocation, e.g. {origin, destination, route}.
 
+With an `email` in the event, only that subscriber's row is checked: flight-save-subscription
+sends one when a paid plan changes its target, so the new target is checked at once.
+
 1. Read the Travelpayouts token from `flight/travelpayouts`; target month = next month.
 2. Fetch the cheapest fare in TWD (the gate), then USD (best effort) from /v1/prices/cheap.
 3. Scan `subscriptions` for the route; enqueue a self-contained match message to
-   `flight-fare-queue` for every row with target_price >= cheapest TWD price.
-   M1 has no payment guard, so there is no status filter.
+   `flight-fare-queue` for every PAYING row with target_price >= cheapest TWD price.
+   Paywall (M2): `active`, or `cancelled` with current_period_end >= now. pending_payment,
+   expired and legacy no-status rows are skipped. A `cancelled` row past its period is
+   conditionally set to `expired` (only if still `cancelled`) and skipped.
 
 An empty / failed (e.g. 429) TWD response skips the route. A failed USD response only
 drops `cheapest_usd` from the message.
@@ -15,7 +20,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import boto3
@@ -26,9 +31,11 @@ API_URL = "https://api.travelpayouts.com/v1/prices/cheap"
 USER_AGENT = "Mozilla/5.0 (compatible; flight-notifier/1.0)"
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "flight-fare-queue")
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
 sqs = boto3.client("sqs")
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _queue_url = None
 
 
@@ -36,17 +43,23 @@ def handler(event, context):
     origin = event["origin"]
     destination = event["destination"]
     route = event.get("route") or f"{origin}-{destination}"
+    email = event.get("email")
     month = next_month(date.today())
     token = read_token()
 
     twd = fetch_cheapest(origin, destination, month, token, "twd")
     if not twd:
-        log(route=route, month=month, cheapest_twd=None, matched=0, note="no TWD fare (empty/error) - skipping")
+        log(route=route, email=email, month=month, cheapest_twd=None, matched=0, note="no TWD fare (empty/error) - skipping")
         return {"ok": True, "route": route, "matched": 0}
     usd = fetch_cheapest(origin, destination, month, token, "usd")  # may be None: never blocks
 
     matched = 0
-    for sub in subscribers(route):
+    now = utc_now()
+    for sub in subscriber(route, email) if email else subscribers(route):
+        if not is_paying(sub, now):
+            if sub.get("subscription_status") == "cancelled":
+                retire(sub)  # the paid period after a cancel has passed
+            continue
         target = Decimal(str(sub["target_price"]))
         if target < Decimal(str(twd["price"])):
             continue
@@ -66,6 +79,7 @@ def handler(event, context):
 
     log(
         route=route,
+        email=email,  # set: one subscriber's target-change check; None: the scheduled check
         month=month,
         cheapest_twd=twd["price"],
         airline=twd["airline"],
@@ -75,13 +89,43 @@ def handler(event, context):
     return {"ok": True, "route": route, "matched": matched}
 
 
+def utc_now() -> str:
+    # Fixed-width so it compares correctly as a string against current_period_end.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def is_paying(sub, now: str) -> bool:
+    """Paywall: `active`, or `cancelled` but still inside the paid period."""
+    status = sub.get("subscription_status")
+    if status == "active":
+        return True
+    if status == "cancelled":
+        return sub.get("current_period_end", "") >= now
+    return False  # pending_payment, expired, or a legacy no-status row
+
+
+def retire(sub):
+    """cancelled -> expired, only if the row is still `cancelled` (a re-subscribe may have won the race)."""
+    try:
+        table.update_item(
+            Key={"email": sub["email"], "route": sub["route"]},
+            UpdateExpression="SET subscription_status = :expired",
+            ConditionExpression="subscription_status = :cancelled",
+            ExpressionAttributeValues={":expired": "expired", ":cancelled": "cancelled"},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        log(email=sub["email"], route=sub["route"], note="not retired: no longer cancelled")
+        return
+    log(email=sub["email"], route=sub["route"], note="cancelled period ended -> expired")
+
+
 def next_month(today: date) -> str:
     year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
     return f"{year:04d}-{month:02d}"
 
 
 def read_token() -> str:
-    raw = secrets.get_secret_value(SecretId="flight/travelpayouts")["SecretString"]
+    raw = secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}travelpayouts")["SecretString"]
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
@@ -133,6 +177,12 @@ def subscribers(route):
         if "LastEvaluatedKey" not in page:
             return
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
+def subscriber(route, email):
+    """The one row for (email, route), as a list: empty if there is none."""
+    item = table.get_item(Key={"email": email, "route": route}).get("Item")
+    return [item] if item else []
 
 
 def queue_url():

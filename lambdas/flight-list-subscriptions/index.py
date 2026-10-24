@@ -6,6 +6,7 @@ overwrite) its subscriptions. Verifying the caller's token is deferred past M1.
 """
 
 import json
+import os
 import re
 from decimal import Decimal
 
@@ -14,7 +15,7 @@ from boto3.dynamodb.conditions import Key
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 
 
 def handler(event, context):

@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from conftest import load_lambda
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,8 +23,9 @@ def test_scheduled_routes_match_the_plans_post_subscribe_accepts(aws):
     assert scheduled == save.PLANS
 
 
-def test_every_scheduled_route_has_city_names_for_the_email(aws):
-    notifier = load_lambda("flight-fare-notification")
+@pytest.mark.parametrize("function_name", ["flight-fare-notification", "flight-status-notification"])
+def test_every_scheduled_route_has_city_names_for_the_email(aws, function_name):
+    notifier = load_lambda(function_name)
 
     for r in committed_routes():
         assert r["origin"] in notifier.CITY_NAMES

@@ -1,12 +1,50 @@
 import { useId, useState, type FormEvent } from "react";
 import { Plane } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useSaveSubscription } from "@/hooks/use-subscriptions";
-import type { Subscription } from "@/lib/flight-api";
+import { useCancelSubscription, useSaveSubscription } from "@/hooks/use-subscriptions";
+import { paymentState, type PaymentState, type Subscription } from "@/lib/flight-api";
 import { formatTwd, parseTargetPrice, type Plan } from "@/lib/plans";
+
+const SUBMIT_LABEL: Record<PaymentState | "none", string> = {
+  none: "開始追蹤",
+  unpaid: "完成付款",
+  active: "更新目標價",
+  grace: "更新目標價",
+  ended: "重新訂閱",
+};
+
+const BADGE = "rounded-full border-2 border-foreground px-2.5 py-0.5 text-xs font-bold";
+
+function StatusBadge({ state, subscription }: { state: PaymentState; subscription: Subscription }) {
+  switch (state) {
+    case "unpaid":
+      return <span className={`${BADGE} bg-marigold`}>未完成付款</span>;
+    case "active":
+      return <span className={`${BADGE} bg-leaf`}>已訂閱 (有效)</span>;
+    case "grace":
+      return (
+        <span className={`${BADGE} bg-background`}>
+          已取消 · 有效至 {subscription.current_period_end_date}
+        </span>
+      );
+    case "ended":
+      return <span className={`${BADGE} bg-muted`}>已結束</span>;
+  }
+}
 
 export function PlanCard({
   plan,
@@ -15,7 +53,7 @@ export function PlanCard({
 }: {
   plan: Plan;
   email: string;
-  /** The saved row for this plan's route, if the user is subscribed. */
+  /** The saved row for this plan's route, if any (paid or not). */
   subscription?: Subscription | undefined;
 }) {
   const headingId = useId();
@@ -23,19 +61,35 @@ export function PlanCard({
   const [target, setTarget] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const save = useSaveSubscription(email);
+  const cancel = useCancelSubscription(email);
+
+  const state = subscription ? paymentState(subscription) : "none";
+  // 完成付款 / 重新訂閱 re-run checkout; they can reuse the saved target without retyping it.
+  const checkoutAgain = state === "unpaid" || state === "ended";
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const target_price = parseTargetPrice(target);
+    const target_price =
+      subscription && checkoutAgain && target.trim() === ""
+        ? subscription.target_price
+        : parseTargetPrice(target);
     if (target_price === null) {
       setValidationError("請輸入大於 0 的目標價（新台幣）。");
       return;
     }
     setValidationError(null);
-    save.mutate({ plan_name: plan.name, target_price });
+    // Paid plans only change the target; everything else goes through the cashier.
+    save.mutate({ plan_name: plan.name, target_price, checkout: state !== "active" && state !== "grace" });
   }
 
-  const error = validationError ?? (save.isError ? `訂閱失敗：${save.error.message}` : null);
+  const error =
+    validationError ??
+    (save.isError
+      ? `訂閱失敗：${save.error.message}`
+      : cancel.isError
+        ? `取消失敗：${cancel.error.message}`
+        : null);
+  const updated = save.isSuccess && save.data.kind === "saved" ? save.data.subscription : null;
 
   return (
     <section aria-labelledby={headingId} className="specimen rounded-2xl p-6">
@@ -51,10 +105,8 @@ export function PlanCard({
             目前最低價約 {formatTwd(plan.hintPriceTwd)}
           </p>
         </div>
-        {subscription && (
-          <span className="rounded-full border-2 border-foreground bg-leaf px-2.5 py-0.5 text-xs font-bold">
-            已訂閱
-          </span>
+        {subscription && state !== "none" && (
+          <StatusBadge state={state} subscription={subscription} />
         )}
       </div>
 
@@ -79,15 +131,43 @@ export function PlanCard({
             {error}
           </p>
         )}
-        {save.isSuccess && !error && (
+        {updated && !error && (
           <p className="text-sm text-muted-foreground">
-            已開始追蹤 — 目標 {formatTwd(save.data.target_price)}
+            已更新目標 — {formatTwd(updated.target_price)}
           </p>
         )}
         <Button type="submit" variant="hero" className="w-full" disabled={save.isPending}>
-          {subscription ? "更新目標價" : "開始追蹤"}
+          {SUBMIT_LABEL[state]}
         </Button>
       </form>
+
+      {subscription && state === "active" && (
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="ghost" className="mt-3 w-full" disabled={cancel.isPending}>
+              取消訂閱
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>取消 {plan.label} 的訂閱？</AlertDialogTitle>
+              <AlertDialogDescription>
+                之後不會再扣款。已付費期間內仍會收到降價通知
+                {subscription.current_period_end_date
+                  ? `，有效至 ${subscription.current_period_end_date}`
+                  : ""}
+                。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>保留訂閱</AlertDialogCancel>
+              <AlertDialogAction onClick={() => cancel.mutate(subscription.route)}>
+                確認取消
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </section>
   );
 }
