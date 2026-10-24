@@ -23,6 +23,20 @@ VERSION=$(infra/backend-version.sh)
 PACKAGED=$(mktemp -t "$STACK.packaged.XXXXXX.yaml")
 trap 'rm -f "$PACKAGED"' EXIT
 
+# A stack whose very first create failed is stuck in ROLLBACK_COMPLETE and can't be updated.
+# Its resources were rolled back, so for dev it's safe to delete and start over. Never prod.
+STATUS=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
+  --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo NONE)
+if [ "$STATUS" = ROLLBACK_COMPLETE ]; then
+  if [ "$ENV" != dev ]; then
+    echo "$STACK is ROLLBACK_COMPLETE; inspect it before deleting anything." >&2
+    exit 1
+  fi
+  echo "$STACK is ROLLBACK_COMPLETE from a failed first create; deleting it to start over."
+  aws cloudformation delete-stack --region "$REGION" --stack-name "$STACK"
+  aws cloudformation wait stack-delete-complete --region "$REGION" --stack-name "$STACK"
+fi
+
 echo "Deploying $STACK (Env=$ENV, BackendVersion=$VERSION, SiteUrl=$SITE_URL)"
 aws cloudformation package --region "$REGION" \
   --template-file infra/flight-m1.yaml \
