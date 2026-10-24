@@ -171,6 +171,25 @@ seconds; the row is `active` with `merchant_trade_no` and `current_period_end` s
 stage back office (`vendor-stage.ecpay.com.tw`, 信用卡收單 → 定期定額查詢), filter by the
 row's `merchant_trade_no` to find the order.
 
+Renewals (manual, stage). ECPay posts each charge from the second on to
+`POST /ecpay-period` (`flight-ecpay-period`). To see one without waiting a month, switch
+the billing period to daily with two charges, pay, check the next day, then switch back:
+
+```bash
+aws lambda update-function-configuration --region us-east-1 --function-name flight-save-subscription \
+  --environment "Variables={API_BASE_URL=$API,PERIOD_TYPE=D,FREQUENCY=1,EXEC_TIMES=2}"
+# pay the first period on the dashboard with the test card, then the next day:
+aws logs tail /aws/lambda/flight-ecpay-period --region us-east-1 --since 1d
+```
+
+Expect a `PeriodReturnURL` log line with the whole payload (minus `CheckMacValue`) showing
+`RtnCode=1` and `TotalSuccessTimes=2`, a `renewed` line, and the row's
+`current_period_end` one day later than before. Because 2 of `ExecTimes=2` is the last
+charge, the row is now `cancelled`, and the parser expires it when that day ends.
+Afterwards, redeploy the stack (or set `PERIOD_TYPE=M,FREQUENCY=1,EXEC_TIMES=999` the
+same way) to go back to monthly. A declined renewal only increments `failed_charge_count`.
+The row turns `expired` on the 6th consecutive decline, which is when ECPay ends the series.
+
 ```bash
 curl -s "$API/subscriptions?email=you@example.com"
 ```

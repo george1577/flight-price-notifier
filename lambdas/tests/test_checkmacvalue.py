@@ -21,6 +21,7 @@ CMV_LAMBDAS = [
     "flight-cancel-subscription",
     "flight-save-subscription",
     "flight-ecpay-return",
+    "flight-ecpay-period",
 ]
 
 VECTORS = [
