@@ -63,7 +63,7 @@ export function PlanCard({
             </span>
           ) : (
             <span className="rounded-full border-2 border-foreground bg-leaf px-2.5 py-0.5 text-xs font-bold">
-              已訂閱
+              {subscription.subscription_status === "active" ? "已訂閱 (有效)" : "已訂閱"}
             </span>
           ))}
       </div>

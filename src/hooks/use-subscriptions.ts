@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  isUnpaid,
   listSubscriptions,
   openCashier,
   saveSubscription,
@@ -19,12 +20,28 @@ export function upsertSubscription(list: Subscription[] | undefined, saved: Subs
   return [...(list ?? []).filter((s) => s.route !== saved.route), saved];
 }
 
-/** The signed-in user's subscriptions (GET /subscriptions). On failure the dashboard renders every plan unsubscribed plus a notice. */
-export function useSubscriptions(email: string) {
+/** While awaiting activation, re-fetch this often, at most this many times (about 1 minute). */
+export const ACTIVATION_POLL_MS = 3_000;
+export const ACTIVATION_POLLS = 20;
+
+/**
+ * The signed-in user's subscriptions (GET /subscriptions). On failure the dashboard renders
+ * every plan unsubscribed plus a notice.
+ *
+ * `awaitActivation`: the user just paid, but `active` arrives asynchronously from ECPay's
+ * ReturnURL callback. Keep re-fetching while any plan is still unpaid, for a bounded time.
+ */
+export function useSubscriptions(email: string, { awaitActivation = false } = {}) {
   return useQuery({
     queryKey: subscriptionsKey(email),
     queryFn: () => listSubscriptions(email),
     enabled: email !== "",
+    refetchInterval: (query) => {
+      const { data, dataUpdateCount } = query.state;
+      const waiting =
+        awaitActivation && dataUpdateCount <= ACTIVATION_POLLS && data?.some(isUnpaid);
+      return waiting ? ACTIVATION_POLL_MS : false;
+    },
   });
 }
 

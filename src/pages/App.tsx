@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { CloudOff, LogOut } from "lucide-react";
 import { PlanCard } from "@/components/PlanCard";
 import { PurchaseNotice } from "@/components/PurchaseNotice";
+import { usePurchaseOutcome } from "@/hooks/use-purchase-outcome";
 import { PLANS } from "@/lib/plans";
 import { supabase } from "@/integrations/supabase/client";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -18,9 +19,13 @@ export default function AppPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const email = user.email ?? "";
+  const purchase = usePurchaseOutcome();
   // If the list request fails, `data` stays undefined: every plan renders unsubscribed (still
   // usable) and a non-blocking notice says the saved subscriptions couldn't be loaded.
-  const { data: subscriptions, isError: loadFailed } = useSubscriptions(email);
+  // Back from a successful payment, the list is re-fetched until the callback has activated it.
+  const { data: subscriptions, isError: loadFailed } = useSubscriptions(email, {
+    awaitActivation: purchase === "success",
+  });
 
   async function signOut() {
     await queryClient.cancelQueries();
@@ -43,7 +48,7 @@ export default function AppPage() {
         <p className="mt-3 text-muted-foreground">
           選一條航線、設定目標價，票價達標時我們會寄信通知你。
         </p>
-        <PurchaseNotice />
+        <PurchaseNotice outcome={purchase} />
         {loadFailed && (
           <Alert className="mt-6 rounded-2xl border-2 border-dashed border-foreground bg-marigold/30 text-foreground">
             <CloudOff className="h-4 w-4" />

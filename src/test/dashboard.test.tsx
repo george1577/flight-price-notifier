@@ -242,18 +242,21 @@ describe("Dashboard plan cards", () => {
 });
 
 describe("Dashboard subscribed state", () => {
-  it("loads the signed-in user's subscriptions and marks the paid plans", async () => {
+  it("loads the signed-in user's subscriptions and marks an active plan 已訂閱 (有效)", async () => {
     mockApi({ list: [savedRow("tokyo", "TPE-TYO", 10000, "active")] });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
-    expect(await within(tokyo).findByText("已訂閱")).toBeInTheDocument();
+    expect(await within(tokyo).findByText("已訂閱 (有效)")).toBeInTheDocument();
     expect(within(tokyo).getByText(/目前目標.*NT\$10,000/)).toBeInTheDocument();
+    expect(within(tokyo).getByLabelText(/目標價/)).toBeInTheDocument();
     expect(within(tokyo).getByRole("button", { name: "更新目標價" })).toBeInTheDocument();
+    expect(within(tokyo).queryByText("未完成付款")).not.toBeInTheDocument();
+    expect(within(tokyo).queryByRole("button", { name: "完成付款" })).not.toBeInTheDocument();
     expect(listRequests()[0]?.[0]).toBe(`${API}/subscriptions?email=amy%40example.com`);
 
     const seoul = card(/台北 ✈ 首爾/);
-    expect(within(seoul).queryByText("已訂閱")).not.toBeInTheDocument();
+    expect(within(seoul).queryByText(/已訂閱/)).not.toBeInTheDocument();
     expect(within(seoul).getByRole("button", { name: "開始追蹤" })).toBeInTheDocument();
   });
 
@@ -266,7 +269,7 @@ describe("Dashboard subscribed state", () => {
 
     const tokyo = card(/台北 ✈ 東京/);
     expect(await within(tokyo).findByText("未完成付款")).toBeInTheDocument();
-    expect(within(tokyo).queryByText("已訂閱")).not.toBeInTheDocument();
+    expect(within(tokyo).queryByText(/已訂閱/)).not.toBeInTheDocument();
     expect(within(tokyo).getByText(/目前目標.*NT\$10,000/)).toBeInTheDocument();
     expect(within(tokyo).getByRole("button", { name: "完成付款" })).toBeInTheDocument();
     expect(within(tokyo).queryByRole("button", { name: "更新目標價" })).not.toBeInTheDocument();
@@ -320,7 +323,7 @@ describe("Dashboard subscribed state", () => {
 
     expect(await within(tokyo).findByText(/目前目標.*NT\$8,000/)).toBeInTheDocument();
     expect(within(tokyo).queryByText(/目前目標.*NT\$10,000/)).not.toBeInTheDocument();
-    expect(within(tokyo).getByText("已訂閱")).toBeInTheDocument();
+    expect(within(tokyo).getByText("已訂閱 (有效)")).toBeInTheDocument();
     expect(sentBody()).toEqual({
       email: "amy@example.com",
       plan_name: "tokyo",
@@ -345,7 +348,7 @@ describe("Dashboard subscribed state", () => {
       expect(notice).toHaveTextContent(/無法載入你的訂閱/);
 
       for (const name of [/台北 ✈ 東京/, /台北 ✈ 首爾/, /台北 ✈ 倫敦/]) {
-        expect(within(card(name)).queryByText("已訂閱")).not.toBeInTheDocument();
+        expect(within(card(name)).queryByText(/已訂閱/)).not.toBeInTheDocument();
         expect(within(card(name)).getByRole("button", { name: "開始追蹤" })).toBeEnabled();
       }
 
@@ -389,5 +392,70 @@ describe("Dashboard purchase notice", () => {
     await waitFor(() => expect(listRequests()).toHaveLength(1));
 
     expect(screen.queryByText(/付款成功|付款未完成/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Dashboard activation after paying", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** GET /subscriptions answers `pending` this many times, then the activated row. */
+  function activationLandsAfter(pendingReplies: number) {
+    let calls = 0;
+    mockApi({
+      list: () => {
+        calls += 1;
+        const status = calls <= pendingReplies ? "pending_payment" : "active";
+        return jsonResponse(200, [savedRow("tokyo", "TPE-TYO", 10000, status)]);
+      },
+    });
+  }
+
+  it("fetches the list again after ?purchase=success until the card turns 已訂閱 (有效)", async () => {
+    activationLandsAfter(2);
+    renderDashboard("/app?purchase=success");
+
+    const tokyo = card(/台北 ✈ 東京/);
+    expect(await within(tokyo).findByText("未完成付款")).toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(await within(tokyo).findByText("已訂閱 (有效)")).toBeInTheDocument();
+    expect(listRequests()).toHaveLength(3);
+    // Once active, it stops asking.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(listRequests()).toHaveLength(3);
+  });
+
+  it("gives up after a while if the callback never arrives", async () => {
+    activationLandsAfter(Infinity);
+    renderDashboard("/app?purchase=success");
+    await within(card(/台北 ✈ 東京/)).findByText("未完成付款");
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    const settled = listRequests().length;
+    expect(settled).toBeGreaterThan(2);
+    expect(settled).toBeLessThanOrEqual(30);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(listRequests()).toHaveLength(settled);
+  });
+
+  it.each([
+    ["without the parameter", "/app"],
+    ["after ?purchase=failed", "/app?purchase=failed"],
+  ])("does not poll an unpaid plan %s", async (_label, entry) => {
+    activationLandsAfter(Infinity);
+    renderDashboard(entry);
+    await within(card(/台北 ✈ 東京/)).findByText("未完成付款");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(listRequests()).toHaveLength(1);
   });
 });
