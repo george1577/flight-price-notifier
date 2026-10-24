@@ -64,18 +64,19 @@ def env(aws, subscriptions_table):
     sqs = boto3.client("sqs", region_name=REGION)
     queue_url = sqs.create_queue(QueueName="flight-fare-queue")["QueueUrl"]
 
-    def subscribe(email, target, route="TPE-TYO", plan="tokyo"):
-        subscriptions_table.put_item(
-            Item={
-                "email": email,
-                "route": route,
-                "plan_name": plan,
-                "origin": "TPE",
-                "destination": route.split("-")[1],
-                "target_price": Decimal(str(target)),
-                "currency": "TWD",
-            }
-        )
+    def subscribe(email, target, route="TPE-TYO", plan="tokyo", updated_at=None):
+        item = {
+            "email": email,
+            "route": route,
+            "plan_name": plan,
+            "origin": "TPE",
+            "destination": route.split("-")[1],
+            "target_price": Decimal(str(target)),
+            "currency": "TWD",
+        }
+        if updated_at:
+            item["updated_at"] = updated_at
+        subscriptions_table.put_item(Item=item)
 
     def messages():
         out = []
@@ -132,6 +133,15 @@ def test_parses_real_provider_keys_into_the_queue_contract(env, monkeypatch):
             },
         }
     ]
+
+
+def test_message_carries_subscription_updated_at_for_the_rearm_check(env, monkeypatch):
+    subscribe, messages = env
+    subscribe("a@example.com", 12000, updated_at="2026-10-23T13:57:08Z")
+
+    run_parser(monkeypatch, {"twd": provider_body(offer(9325))})
+
+    assert messages()[0]["subscription_updated_at"] == "2026-10-23T13:57:08Z"
 
 
 def test_calls_cheap_endpoint_for_next_month_with_token_and_custom_user_agent(env, monkeypatch):

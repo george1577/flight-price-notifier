@@ -59,6 +59,8 @@ def handler(event, context):
         }
         if usd:
             body["cheapest_usd"] = usd
+        if sub.get("updated_at"):
+            body["subscription_updated_at"] = sub["updated_at"]  # lets the notifier re-arm dedup
         sqs.send_message(QueueUrl=queue_url(), MessageBody=json.dumps(body, ensure_ascii=False))
         matched += 1
 
