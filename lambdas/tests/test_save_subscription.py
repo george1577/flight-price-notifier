@@ -66,6 +66,32 @@ def test_form_is_a_monthly_recurring_credit_card_order_for_this_subscriber(save)
         assert not re.search(r"curl|python|wget|script", text, re.IGNORECASE)
 
 
+def test_billing_period_comes_from_the_environment_onto_the_form_and_the_row(
+    monkeypatch, subscriptions_table, ecpay_secret
+):
+    # The operator's renewal test: a daily period, two charges in total.
+    monkeypatch.setenv("API_BASE_URL", API)
+    monkeypatch.setenv("PERIOD_TYPE", " D\n")
+    monkeypatch.setenv("FREQUENCY", "1")
+    monkeypatch.setenv("EXEC_TIMES", "2")
+    save = load_lambda("flight-save-subscription").handler
+
+    form = checkout(save, AMY_TOKYO)
+
+    fields = form["fields"]
+    assert (fields["PeriodType"], fields["Frequency"], fields["ExecTimes"]) == ("D", "1", "2")
+    assert fields["CheckMacValue"] == ecpay_cmv(fields)
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert (row["period_type"], row["frequency"], row["exec_times"]) == ("D", 1, 2)
+
+
+def test_billing_period_defaults_to_monthly_and_open_ended(save, subscriptions_table):
+    checkout(save, AMY_TOKYO)
+
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert (row["period_type"], row["frequency"], row["exec_times"]) == ("M", 1, 999)
+
+
 def test_callback_urls_point_at_the_api_and_are_stripped(save):
     fields = checkout(save, AMY_TOKYO)["fields"]
 

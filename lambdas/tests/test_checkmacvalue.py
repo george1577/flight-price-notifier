@@ -20,6 +20,7 @@ from conftest import ecpay_cmv, load_lambda
 CMV_LAMBDAS = [
     "flight-save-subscription",
     "flight-ecpay-return",
+    "flight-ecpay-period",
 ]
 
 VECTORS = [
