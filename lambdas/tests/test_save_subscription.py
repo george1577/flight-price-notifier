@@ -42,6 +42,14 @@ def test_returns_the_saved_subscription_as_plain_json_numbers(save):
     assert saved["currency"] == "TWD"
 
 
+def test_london_plan_saves_the_tpe_lon_route(save, subscriptions_table):
+    response = subscribe(save, {"email": "amy@example.com", "plan_name": "london", "target_price": 28000})
+
+    assert response["statusCode"] == 200
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-LON")
+    assert (row["origin"], row["destination"], row["plan_name"]) == ("TPE", "LON", "london")
+
+
 def test_saving_again_overwrites_the_target_instead_of_duplicating(save, subscriptions_table):
     first = response_json(
         subscribe(save, {"email": "amy@example.com", "plan_name": "tokyo", "target_price": 12000})

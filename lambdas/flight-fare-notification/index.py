@@ -103,7 +103,7 @@ def parse_utc(iso):
 
 
 # ---------------------------------------------------------------- renderer
-CITY_NAMES = {"TPE": "台北", "TYO": "東京", "SEL": "首爾"}
+CITY_NAMES = {"TPE": "台北", "TYO": "東京", "SEL": "首爾", "LON": "倫敦"}
 BOOKING_BASE = "https://www.aviasales.com/search/"
 
 

@@ -83,6 +83,8 @@ The route list lives in four places that **must change together** when you add a
 3. `infra/flight-routes.json` (what the scheduled check fetches; re-upload it to S3)
 4. `CITY_NAMES` in `lambdas/flight-fare-notification/index.py` (city names in the email)
 
+`lambdas/tests/test_route_tables.py` fails if these four drift apart.
+
 ## Smoke check after deploy
 
 ```bash

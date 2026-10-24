@@ -109,11 +109,12 @@ afterEach(() => {
 });
 
 describe("Dashboard plan cards", () => {
-  it("shows the Tokyo and Seoul plans with a current-fare hint", () => {
+  it("shows the Tokyo, Seoul and London plans with a current-fare hint", () => {
     renderDashboard();
 
     expect(within(card(/台北 ✈ 東京/)).getByText(/NT\$9,325/)).toBeInTheDocument();
     expect(within(card(/台北 ✈ 首爾/)).getByText(/NT\$5,989/)).toBeInTheDocument();
+    expect(within(card(/台北 ✈ 倫敦/)).getByText(/NT\$30,443/)).toBeInTheDocument();
   });
 
   it("subscribes to a plan by POSTing the email, plan and target to the API", async () => {
@@ -260,7 +261,7 @@ describe("Dashboard subscribed state", () => {
       const notice = await screen.findByRole("alert");
       expect(notice).toHaveTextContent(/無法載入你的訂閱/);
 
-      for (const name of [/台北 ✈ 東京/, /台北 ✈ 首爾/]) {
+      for (const name of [/台北 ✈ 東京/, /台北 ✈ 首爾/, /台北 ✈ 倫敦/]) {
         expect(within(card(name)).queryByText("已訂閱")).not.toBeInTheDocument();
         expect(within(card(name)).getByRole("button", { name: "開始追蹤" })).toBeEnabled();
       }

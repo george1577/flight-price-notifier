@@ -1,12 +1,12 @@
-// The two fixed M1 plans. The backend (lambdas/flight-save-subscription) holds the same table.
-export type PlanName = "tokyo" | "seoul";
-export type Route = "TPE-TYO" | "TPE-SEL";
+// The fixed plans. The backend (lambdas/flight-save-subscription) holds the same table.
+export type PlanName = "tokyo" | "seoul" | "london";
+export type Route = "TPE-TYO" | "TPE-SEL" | "TPE-LON";
 
 export type Plan = {
   name: PlanName;
   label: string;
   origin: "TPE";
-  destination: "TYO" | "SEL";
+  destination: "TYO" | "SEL" | "LON";
   route: Route;
   /** Rough current cheapest fare in TWD, shown as a budgeting hint. */
   hintPriceTwd: number;
@@ -28,6 +28,14 @@ export const PLANS: readonly Plan[] = [
     destination: "SEL",
     route: "TPE-SEL",
     hintPriceTwd: 5989,
+  },
+  {
+    name: "london",
+    label: "台北 ✈ 倫敦",
+    origin: "TPE",
+    destination: "LON",
+    route: "TPE-LON",
+    hintPriceTwd: 30443,
   },
 ];
 

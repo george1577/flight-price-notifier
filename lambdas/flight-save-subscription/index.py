@@ -15,6 +15,7 @@ import boto3
 PLANS = {
     "tokyo": {"origin": "TPE", "destination": "TYO"},
     "seoul": {"origin": "TPE", "destination": "SEL"},
+    "london": {"origin": "TPE", "destination": "LON"},
 }
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

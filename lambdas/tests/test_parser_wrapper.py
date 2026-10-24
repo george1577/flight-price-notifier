@@ -5,7 +5,7 @@ import json
 import boto3
 import pytest
 
-from conftest import LAMBDAS_DIR, REGION, load_lambda
+from conftest import REGION, load_lambda
 
 BUCKET = "flight-config-123456789012"
 ROUTES = [
@@ -47,8 +47,3 @@ def test_invokes_parser_once_per_configured_route_asynchronously(wrapper):
         {"origin": "TPE", "destination": "SEL", "route": "TPE-SEL"},
     ]
     assert result["invoked"] == 2
-
-
-def test_committed_routes_file_matches_spec():
-    committed = json.loads((LAMBDAS_DIR.parent / "infra" / "flight-routes.json").read_text())
-    assert committed == ROUTES
