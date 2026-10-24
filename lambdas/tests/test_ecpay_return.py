@@ -5,19 +5,40 @@ keys, over an ECPay-shaped form body that includes the empty CustomField3/Custom
 """
 
 import base64
+import json
 import re
 import urllib.parse
 from datetime import datetime, timezone
 
+import boto3
 import pytest
 
-from conftest import api_event, ecpay_cmv, load_lambda
+from conftest import REGION, api_event, ecpay_cmv, load_lambda
 
 TRADE_NO = "FP2610241200001A2B3C"
 
 
 @pytest.fixture
-def module(subscriptions_table, ecpay_secret):
+def status_queue(aws):
+    """flight-status-queue; `drain()` returns (and deletes) every message body on it."""
+    sqs = boto3.client("sqs", region_name=REGION)
+    url = sqs.create_queue(QueueName="flight-status-queue")["QueueUrl"]
+
+    def drain():
+        bodies = []
+        while True:
+            got = sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=10).get("Messages", [])
+            if not got:
+                return bodies
+            for m in got:
+                bodies.append(json.loads(m["Body"]))
+                sqs.delete_message(QueueUrl=url, ReceiptHandle=m["ReceiptHandle"])
+
+    return drain
+
+
+@pytest.fixture
+def module(subscriptions_table, ecpay_secret, status_queue):
     return load_lambda("flight-ecpay-return")
 
 
@@ -305,3 +326,73 @@ def test_a_callback_without_the_custom_fields_is_acknowledged_and_creates_nothin
 
     assert_ok(response)
     assert subscriptions_table.scan()["Items"] == []
+
+
+# ------------------------------------------------------------ welcome email (#20)
+
+
+def test_an_activation_enqueues_exactly_one_welcome_message(ecpay_return, subscriptions_table, status_queue):
+    pending_row(subscriptions_table)
+
+    assert_ok(post(ecpay_return, signed(callback_fields())))
+
+    assert status_queue() == [
+        {"event_type": "welcome", "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo"}
+    ]
+
+
+def test_a_resent_callback_enqueues_no_second_welcome(ecpay_return, subscriptions_table, status_queue):
+    pending_row(subscriptions_table)
+    assert_ok(post(ecpay_return, signed(callback_fields())))
+    assert len(status_queue()) == 1
+
+    assert_ok(post(ecpay_return, signed(callback_fields(RtnMsg="paid"))))
+    assert_ok(post(ecpay_return, signed(callback_fields(MerchantTradeNo="FP2610241300009Z9Z9Z"))))
+
+    assert status_queue() == []
+
+
+@pytest.mark.parametrize(
+    ("fields", "row_status"),
+    [
+        pytest.param({"SimulatePaid": "1"}, "pending_payment", id="simulated payment"),
+        pytest.param({"RtnCode": "0", "RtnMsg": "授權失敗"}, "pending_payment", id="failed charge"),
+        pytest.param({}, "cancelled", id="late resend for a cancelled row"),
+        pytest.param({"CustomField1": "ghost@example.com"}, "pending_payment", id="no matching row"),
+    ],
+)
+def test_callbacks_that_activate_nothing_enqueue_nothing(
+    ecpay_return, subscriptions_table, status_queue, fields, row_status
+):
+    pending_row(subscriptions_table, subscription_status=row_status)
+
+    assert_ok(post(ecpay_return, signed(callback_fields(**fields))))
+
+    assert status_queue() == []
+
+
+def test_a_rejected_callback_enqueues_nothing(ecpay_return, subscriptions_table, status_queue):
+    pending_row(subscriptions_table)
+    fields = signed(callback_fields())
+    fields["TradeAmt"] = "1"
+
+    assert post(ecpay_return, fields)["statusCode"] == 400
+    assert status_queue() == []
+
+
+def test_a_failed_enqueue_still_keeps_the_activation_and_replies_1_ok(
+    monkeypatch, module, ecpay_return, subscriptions_table, capsys
+):
+    # The row is already active, so a retry from ECPay could not re-send the welcome anyway:
+    # log it loudly for the operator instead of failing the callback.
+    pending_row(subscriptions_table)
+
+    def broken(**kwargs):
+        raise RuntimeError("sqs down")
+
+    monkeypatch.setattr(module.sqs, "send_message", broken)
+
+    assert_ok(post(ecpay_return, signed(callback_fields())))
+    assert get_row(subscriptions_table)["subscription_status"] == "active"
+    logged = capsys.readouterr().out
+    assert "welcome" in logged and "sqs down" in logged
