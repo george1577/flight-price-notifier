@@ -130,6 +130,34 @@ def test_role_policy_keeps_every_m1_statement(template):
     } <= sids
 
 
+# ---------------------------------------------- cancel (#21)
+
+
+def test_cancel_lambda_is_on_post_cancel_and_told_the_status_queue_name(template):
+    fn_name = api_route_function(template, "POST /cancel")
+    fn = template["Resources"][fn_name]["Properties"]
+
+    assert fn["FunctionName"] == "flight-cancel-subscription"
+    assert fn["Code"] == "../lambdas/flight-cancel-subscription/"
+    assert fn["Role"] == {"Fn::GetAtt": "FlightLambdaRole.Arn"}
+    assert fn["Environment"]["Variables"]["STATUS_QUEUE_NAME"] == {"Fn::GetAtt": "FlightStatusQueue.QueueName"}
+
+    permissions = [
+        p["Properties"] for p in resources_of_type(template, "AWS::Lambda::Permission").values()
+        if p["Properties"]["FunctionName"] == {"Ref": fn_name}
+    ]
+    assert [p["SourceArn"] for p in permissions] == [
+        {"Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/cancel"}
+    ]
+
+
+def test_browsers_may_post_json_to_the_api_cross_origin(template):
+    cors = template["Resources"]["FlightApi"]["Properties"]["CorsConfiguration"]
+
+    assert "POST" in cors["AllowMethods"]  # POST /cancel from the dashboard
+    assert "content-type" in [h.lower() for h in cors["AllowHeaders"]]
+
+
 # ---------------------------------------------- status notifications (#20)
 
 

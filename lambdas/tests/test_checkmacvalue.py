@@ -18,6 +18,7 @@ import pytest
 from conftest import ecpay_cmv, load_lambda
 
 CMV_LAMBDAS = [
+    "flight-cancel-subscription",
     "flight-save-subscription",
     "flight-ecpay-return",
 ]

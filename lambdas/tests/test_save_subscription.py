@@ -197,6 +197,55 @@ def test_an_active_subscriber_updates_the_target_in_place_without_paying_again(s
     }}
 
 
+# ------------------------------------------------- cancelled grace period (#21)
+
+CANCELLED = {
+    **ACTIVE, "subscription_status": "cancelled", "cancelled_at": "2026-01-10T00:00:00Z",
+}
+
+
+def seed_cancelled(table, period_end):
+    seeded = {
+        "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo",
+        "origin": "TPE", "destination": "TYO", "target_price": 12000, "currency": "TWD",
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", **CANCELLED,
+        "current_period_end": period_end, "current_period_end_date": period_end[:10],
+    }
+    table.put_item(Item=seeded)
+    return seeded
+
+
+def test_a_cancelled_subscriber_inside_the_paid_period_updates_the_target_and_stays_cancelled(
+    save, subscriptions_table
+):
+    seeded = seed_cancelled(subscriptions_table, "2999-01-01T00:00:00Z")
+
+    response = subscribe(save, {**AMY_TOKYO, "target_price": 9000})
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["content-type"] == "application/json"
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert row["target_price"] == 9000
+    assert {k: v for k, v in row.items() if k not in ("target_price", "updated_at")} == {
+        k: v for k, v in seeded.items() if k not in ("target_price", "updated_at")
+    }
+    body = response_json(response)
+    assert body["subscription_status"] == "cancelled"
+    assert body["target_price"] == 9000
+    assert body["current_period_end_date"] == "2999-01-01"
+
+
+def test_a_cancelled_subscriber_past_the_paid_period_goes_back_through_checkout(save, subscriptions_table):
+    seed_cancelled(subscriptions_table, "2020-01-01T00:00:00Z")
+
+    fields = checkout(save, {**AMY_TOKYO, "target_price": 9000})["fields"]
+
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert row["subscription_status"] == "pending_payment"
+    assert row["merchant_trade_no"] == fields["MerchantTradeNo"] != CANCELLED["merchant_trade_no"]
+    assert row["target_price"] == 9000
+
+
 def test_saving_again_overwrites_the_target_instead_of_duplicating(save, subscriptions_table):
     checkout(save, {**AMY_TOKYO, "target_price": 12000})
     checkout(save, {**AMY_TOKYO, "target_price": 9000})
