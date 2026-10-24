@@ -64,7 +64,16 @@ def env(aws, subscriptions_table):
     sqs = boto3.client("sqs", region_name=REGION)
     queue_url = sqs.create_queue(QueueName="flight-fare-queue")["QueueUrl"]
 
-    def subscribe(email, target, route="TPE-TYO", plan="tokyo", updated_at=None):
+    def subscribe(
+        email,
+        target,
+        route="TPE-TYO",
+        plan="tokyo",
+        updated_at=None,
+        status="active",
+        current_period_end=None,
+    ):
+        """Seed a subscriptions row. `status=None` writes a legacy (pre-M2) row with no status."""
         item = {
             "email": email,
             "route": route,
@@ -76,6 +85,10 @@ def env(aws, subscriptions_table):
         }
         if updated_at:
             item["updated_at"] = updated_at
+        if status is not None:
+            item["subscription_status"] = status
+        if current_period_end is not None:
+            item["current_period_end"] = current_period_end
         subscriptions_table.put_item(Item=item)
 
     def messages():
@@ -208,3 +221,73 @@ def test_logs_cheapest_fare_and_match_count(env, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "TPE-TYO" in out and "9325" in out and '"matched": 1' in out
+
+
+# --- M2 paywall: only paying subscribers are enqueued -------------------------------
+
+MET = {"twd": provider_body(offer(9325))}  # cheapest 9,325 TWD; every target below is >= it
+
+
+def test_pending_payment_row_is_not_enqueued_even_when_the_target_is_met(env, monkeypatch):
+    subscribe, messages = env
+    subscribe("paid@example.com", 12000)
+    subscribe("unpaid@example.com", 12000, status="pending_payment")
+
+    result, _ = run_parser(monkeypatch, MET)
+
+    assert [m["email"] for m in messages()] == ["paid@example.com"]
+    assert result["matched"] == 1
+
+
+def stamp(days_from_now):
+    """A current_period_end in the stored fixed-width UTC format, offset from today."""
+    return (date.today() + timedelta(days=days_from_now)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_cancelled_row_inside_its_paid_period_is_still_enqueued(env, monkeypatch):
+    subscribe, messages = env
+    subscribe("grace@example.com", 12000, status="cancelled", current_period_end=stamp(10))
+
+    run_parser(monkeypatch, MET)
+
+    assert [m["email"] for m in messages()] == ["grace@example.com"]
+
+
+def test_lapsed_cancelled_row_is_retired_to_expired_and_not_enqueued(env, monkeypatch, subscriptions_table):
+    subscribe, messages = env
+    subscribe("lapsed@example.com", 12000, status="cancelled", current_period_end=stamp(-1))
+
+    result, _ = run_parser(monkeypatch, MET)
+
+    assert messages() == []
+    assert result["matched"] == 0
+    row = subscriptions_table.get_item(Key={"email": "lapsed@example.com", "route": "TPE-TYO"})["Item"]
+    assert row["subscription_status"] == "expired"
+
+
+@pytest.mark.parametrize("status", ["expired", None], ids=["expired", "legacy-no-status"])
+def test_expired_and_legacy_rows_are_never_enqueued(env, monkeypatch, status):
+    subscribe, messages = env
+    subscribe("x@example.com", 12000, status=status, current_period_end=stamp(10))
+
+    result, _ = run_parser(monkeypatch, MET)
+
+    assert messages() == []
+    assert result["matched"] == 0
+
+
+def test_retiring_does_not_clobber_a_row_that_was_reactivated_after_the_scan(env, monkeypatch, subscriptions_table):
+    subscribe, messages = env
+    subscribe("back@example.com", 12000, status="active", current_period_end=stamp(-1))
+    stale = dict(
+        subscriptions_table.get_item(Key={"email": "back@example.com", "route": "TPE-TYO"})["Item"],
+        subscription_status="cancelled",
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", FakeTravelpayouts(MET))
+    parser = load_lambda("flight-parser")
+    monkeypatch.setattr(parser, "subscribers", lambda route: iter([stale]))
+
+    parser.handler(ROUTE_EVENT, None)
+
+    row = subscriptions_table.get_item(Key={"email": "back@example.com", "route": "TPE-TYO"})["Item"]
+    assert row["subscription_status"] == "active"
