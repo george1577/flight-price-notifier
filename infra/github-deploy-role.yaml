@@ -144,6 +144,13 @@ Resources:
                   - lambda:DeleteEventSourceMapping
                   - lambda:ListEventSourceMappings
                 Resource: "*"
+              - Sid: EventSourceMappingTags # updating a mapping re-applies the stack's tags
+                Effect: Allow
+                Action:
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListTags
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*
               - Sid: Schedule
                 Effect: Allow
                 Action: events:*
