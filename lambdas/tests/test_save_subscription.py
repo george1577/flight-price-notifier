@@ -9,11 +9,38 @@ API = "https://abc123.execute-api.us-east-1.amazonaws.com"
 STAGE_CASHIER = "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
 
 
+class FakeLambda:
+    """Records invokes; moto can't run the real parser without Docker."""
+
+    def __init__(self, error=None):
+        self.calls, self.error = [], error
+
+    def invoke(self, **kwargs):
+        if self.error:
+            raise self.error
+        self.calls.append(kwargs)
+        return {"StatusCode": 202}
+
+
 @pytest.fixture
-def save(monkeypatch, subscriptions_table, ecpay_secret):
+def module(monkeypatch, subscriptions_table, ecpay_secret):
     # A stray newline/space in a URL changes the CMV; the Lambda must strip it.
     monkeypatch.setenv("API_BASE_URL", f"  {API}/\n")
-    return load_lambda("flight-save-subscription").handler
+    monkeypatch.setenv("PARSER_FUNCTION", "flight-parser-dev")
+    loaded = load_lambda("flight-save-subscription")
+    loaded.lambda_client = FakeLambda()
+    return loaded
+
+
+@pytest.fixture
+def save(module):
+    return module.handler
+
+
+@pytest.fixture
+def price_checks(module):
+    """The single-subscriber price checks the Lambda started, as parser events."""
+    return lambda: [json.loads(c["Payload"]) for c in module.lambda_client.calls]
 
 
 def subscribe(save, body):
@@ -193,6 +220,11 @@ def test_unpaid_rows_go_back_through_checkout(save, subscriptions_table, existin
     assert row["updated_at"] > "2026-01-01T00:00:00Z"
 
 
+AMY_ROW = {
+    "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo",
+    "origin": "TPE", "destination": "TYO", "target_price": 12000, "currency": "TWD",
+    "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+}
 ACTIVE = {
     "subscription_status": "active", "merchant_trade_no": "FP2610241200001A2B3C",
     "period_type": "M", "frequency": 1, "activated_at": "2026-01-01T00:00:30Z",
@@ -372,3 +404,56 @@ def test_subscribe_on_a_pending_row_keeps_its_checkout_attempt(save, subscriptio
     assert row["target_price"] == 9000
     assert row["subscription_status"] == "pending_payment"
     assert row["merchant_trade_no"] == trade_no
+
+
+# ------------------------------------------ a paid target change is checked at once
+# Changing a paid plan's target starts an asynchronous flight-parser run for just this
+# subscriber, so an already-met target is emailed now instead of at the next schedule.
+
+AMY_CHECK = {"origin": "TPE", "destination": "TYO", "route": "TPE-TYO", "email": "amy@example.com"}
+
+
+@pytest.mark.parametrize("send", [subscribe, post_checkout], ids=["/subscribe", "/checkout"])
+def test_an_active_target_change_starts_a_price_check_for_that_subscriber(
+    module, save, subscriptions_table, price_checks, send
+):
+    subscriptions_table.put_item(Item={**AMY_ROW, **ACTIVE})
+
+    send(save, {**AMY_TOKYO, "target_price": 9000})
+
+    assert price_checks() == [AMY_CHECK]
+    (call,) = module.lambda_client.calls
+    assert call["FunctionName"] == "flight-parser-dev"
+    assert call["InvocationType"] == "Event"  # asynchronous: the save never waits for it
+
+
+@pytest.mark.parametrize("send", [subscribe, post_checkout], ids=["/subscribe", "/checkout"])
+def test_a_cancelled_plan_inside_its_paid_period_is_checked_too(save, subscriptions_table, price_checks, send):
+    seed_cancelled(subscriptions_table, "2999-01-01T00:00:00Z")
+
+    send(save, {**AMY_TOKYO, "target_price": 9000})
+
+    assert price_checks() == [AMY_CHECK]
+
+
+def test_unpaid_saves_start_no_price_check(save, subscriptions_table, price_checks):
+    subscribe(save, AMY_TOKYO)  # new row, no status
+    checkout(save, AMY_TOKYO)  # pending_payment
+    subscribe(save, {**AMY_TOKYO, "target_price": 9000})  # still pending
+    seed_cancelled(subscriptions_table, "2020-01-01T00:00:00Z")
+    subscribe(save, AMY_TOKYO)  # cancelled and past its period
+    checkout(save, AMY_TOKYO)
+
+    assert price_checks() == []
+
+
+@pytest.mark.parametrize("send", [subscribe, post_checkout], ids=["/subscribe", "/checkout"])
+def test_a_failed_price_check_start_does_not_fail_the_save(module, save, subscriptions_table, send, capsys):
+    subscriptions_table.put_item(Item={**AMY_ROW, **ACTIVE})
+    module.lambda_client = FakeLambda(error=RuntimeError("throttled"))
+
+    response = send(save, {**AMY_TOKYO, "target_price": 9000})
+
+    assert response["statusCode"] == 200
+    assert get_row(subscriptions_table, "amy@example.com", "TPE-TYO")["target_price"] == 9000
+    assert "price check not started" in capsys.readouterr().out

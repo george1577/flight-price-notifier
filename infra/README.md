@@ -14,6 +14,7 @@ The same template is deployed twice, so testing never touches real users:
 | Names | `subscriptions`, `flight-api`, `flight-parser`, ... | the same, with `-dev` |
 | Secrets | `flight/*` | `flight-dev/*` (stage ECPay merchant) |
 | Scheduled price check | every 30 min | off (invoke `flight-parser-wrapper-dev` by hand) |
+| Check on a paid target change | at once | at once |
 | `SiteUrl` (ECPay return) | `https://flight-price-notifier-bice.vercel.app` | `http://localhost:8080` |
 | Deployed by | push to `main` | push to `dev`, or `infra/deploy.sh dev` |
 | Frontend | Vercel production (deploy hook, after the backend) | `npm run dev` with `.env.local`, Vercel previews |
@@ -261,6 +262,21 @@ An empty or 429 TWD answer from Travelpayouts logs "no TWD fare" and enqueues no
 That is a skip, not a failure. Messages you enqueue while testing stay on the queue: **purge
 `flight-fare-queue` before the notifier's event-source mapping is created** so stale test
 messages don't all send at once (`aws sqs purge-queue --queue-url "$QURL"`).
+
+### Target change on a paid plan (one subscriber, at once)
+
+When an `active` plan, or a `cancelled` one still inside its paid period, changes its target
+(`/subscribe` or `/checkout`), flight-save-subscription asynchronously invokes the parser with
+`{"origin", "destination", "route", "email"}`. The parser then checks only that subscriber's
+row. The notifier's dedup re-arms because the row's `updated_at` is newer than the last alert.
+Smoke check: on a paid row whose target is above the live fare, change the target (still above
+it), then:
+
+```bash
+aws logs tail /aws/lambda/flight-save-subscription --region us-east-1 --since 5m | grep price_check_started
+aws logs tail /aws/lambda/flight-parser --region us-east-1 --since 5m | grep '"email"'
+aws logs tail /aws/lambda/flight-fare-notification --region us-east-1 --since 5m
+```
 
 ### flight-parser-wrapper (every route, every 30 minutes)
 

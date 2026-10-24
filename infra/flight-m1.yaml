@@ -141,7 +141,9 @@ Resources:
                 Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub arn:aws:s3:::${FlightConfigBucket}/flight-routes.json
-              - Sid: FlightParserInvoke # flight-parser-wrapper fans out per route
+              # flight-parser-wrapper fans out per route; flight-save-subscription checks one
+              # subscriber at once when a paid plan changes its target.
+              - Sid: FlightParserInvoke
                 Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !Sub
@@ -192,6 +194,7 @@ Resources:
           HISTORY_TABLE: !Ref NotificationHistoryTable
           SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
           API_BASE_URL: !Sub https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com
+          PARSER_FUNCTION: !Ref ParserFunction # a paid target change is checked at once
           # ECPay billing period (#22). To test renewals set D / 1 / 2 (daily, two charges),
           # pay once, check flight-ecpay-period the next day, then switch back to M / 1 / 999.
           PERIOD_TYPE: "M"

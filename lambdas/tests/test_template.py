@@ -99,6 +99,12 @@ def test_save_subscription_gets_the_api_base_url_for_the_ecpay_callbacks(templat
     assert env["API_BASE_URL"] == {"Fn::Sub": "https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com"}
 
 
+def test_save_subscription_can_start_a_price_check_on_its_own_stacks_parser(template):
+    env = function_named(template, "flight-save-subscription")["Properties"]["Environment"]["Variables"]
+
+    assert env["PARSER_FUNCTION"] == {"Ref": "ParserFunction"}
+
+
 def test_save_subscription_billing_period_is_configured_in_the_template(template):
     env = function_named(template, "flight-save-subscription")["Properties"]["Environment"]["Variables"]
 

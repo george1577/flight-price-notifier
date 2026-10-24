@@ -291,3 +291,43 @@ def test_retiring_does_not_clobber_a_row_that_was_reactivated_after_the_scan(env
 
     row = subscriptions_table.get_item(Key={"email": "back@example.com", "route": "TPE-TYO"})["Item"]
     assert row["subscription_status"] == "active"
+
+
+# ---------------------------------------- one subscriber's check (a target change)
+# flight-save-subscription invokes the parser with the subscriber's email when a paid plan
+# changes its target, so the new target is checked at once instead of at the next schedule.
+
+ONE_EVENT = {**ROUTE_EVENT, "email": "amy@example.com"}
+
+
+def test_an_email_in_the_event_checks_only_that_subscriber(env, monkeypatch):
+    subscribe, messages = env
+    subscribe("amy@example.com", 12000, updated_at="2026-10-24T08:36:27Z")
+    subscribe("bob@example.com", 12000)
+
+    result, _ = run_parser(monkeypatch, MET, event=ONE_EVENT)
+
+    sent = messages()
+    assert [m["email"] for m in sent] == ["amy@example.com"]
+    assert sent[0]["subscription_updated_at"] == "2026-10-24T08:36:27Z"  # re-arms the dedup
+    assert result["matched"] == 1
+
+
+def test_a_single_subscriber_check_still_applies_the_paywall_and_the_target(env, monkeypatch):
+    subscribe, messages = env
+    subscribe("amy@example.com", 12000, status="pending_payment")
+
+    run_parser(monkeypatch, MET, event=ONE_EVENT)
+    subscribe("amy@example.com", 9000)  # paid, but the target is below the 9,325 fare
+    run_parser(monkeypatch, MET, event=ONE_EVENT)
+
+    assert messages() == []
+
+
+def test_a_single_subscriber_check_for_a_missing_row_enqueues_nothing(env, monkeypatch):
+    _, messages = env
+
+    result, _ = run_parser(monkeypatch, MET, event=ONE_EVENT)
+
+    assert messages() == []
+    assert result["matched"] == 0

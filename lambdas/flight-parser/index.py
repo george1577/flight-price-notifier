@@ -1,5 +1,8 @@
 """flight-parser: handle ONE route per invocation, e.g. {origin, destination, route}.
 
+With an `email` in the event, only that subscriber's row is checked: flight-save-subscription
+sends one when a paid plan changes its target, so the new target is checked at once.
+
 1. Read the Travelpayouts token from `flight/travelpayouts`; target month = next month.
 2. Fetch the cheapest fare in TWD (the gate), then USD (best effort) from /v1/prices/cheap.
 3. Scan `subscriptions` for the route; enqueue a self-contained match message to
@@ -40,18 +43,19 @@ def handler(event, context):
     origin = event["origin"]
     destination = event["destination"]
     route = event.get("route") or f"{origin}-{destination}"
+    email = event.get("email")
     month = next_month(date.today())
     token = read_token()
 
     twd = fetch_cheapest(origin, destination, month, token, "twd")
     if not twd:
-        log(route=route, month=month, cheapest_twd=None, matched=0, note="no TWD fare (empty/error) - skipping")
+        log(route=route, email=email, month=month, cheapest_twd=None, matched=0, note="no TWD fare (empty/error) - skipping")
         return {"ok": True, "route": route, "matched": 0}
     usd = fetch_cheapest(origin, destination, month, token, "usd")  # may be None: never blocks
 
     matched = 0
     now = utc_now()
-    for sub in subscribers(route):
+    for sub in subscriber(route, email) if email else subscribers(route):
         if not is_paying(sub, now):
             if sub.get("subscription_status") == "cancelled":
                 retire(sub)  # the paid period after a cancel has passed
@@ -75,6 +79,7 @@ def handler(event, context):
 
     log(
         route=route,
+        email=email,  # set: one subscriber's target-change check; None: the scheduled check
         month=month,
         cheapest_twd=twd["price"],
         airline=twd["airline"],
@@ -172,6 +177,12 @@ def subscribers(route):
         if "LastEvaluatedKey" not in page:
             return
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
+def subscriber(route, email):
+    """The one row for (email, route), as a list: empty if there is none."""
+    item = table.get_item(Key={"email": email, "route": route}).get("Item")
+    return [item] if item else []
 
 
 def queue_url():

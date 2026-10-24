@@ -11,6 +11,11 @@ Anything else upserts one `subscriptions` row per (email, route), marks it
 sends the browser to ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only
 the ECPay callbacks may set `active`; this Lambda never sets it and never downgrades it.
 
+When a paid plan's target changes (on either route), the Lambda asynchronously invokes
+flight-parser for just this subscriber, so a target the current fare already meets is emailed
+now instead of at the next scheduled check. Starting that check is best effort: if it fails,
+the save still succeeds and the schedule picks the target up.
+
 The billing period on the form and the row (PeriodType / Frequency / ExecTimes) comes from
 the PERIOD_TYPE / FREQUENCY / EXEC_TIMES environment variables (default M / 1 / 999).
 """
@@ -45,7 +50,9 @@ TRADE_DESC = "Flight Price Notifier monthly plan"
 
 # Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
 SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
+PARSER_FUNCTION = os.environ.get("PARSER_FUNCTION", "flight-parser")
 secrets = boto3.client("secretsmanager")
+lambda_client = boto3.client("lambda")
 table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _ecpay = None  # cached per warm container; changing the secret needs a cold start
 
@@ -67,6 +74,8 @@ def handler(event, context):
     if not event.get("routeKey", "").endswith("/checkout"):
         saved = save_target(email, route, plan_name, plan, target_price, now)
         print(json.dumps({"target_saved": route, "target_price": str(target_price)}))
+        if is_paid(saved, now):
+            start_price_check(email, plan, route)
         return respond(200, saved)
 
     ecpay_config()  # fail before writing anything if flight/ecpay is missing or malformed
@@ -82,6 +91,7 @@ def handler(event, context):
         else:
             return respond_html(checkout_form(email, route, trade_no, now, period))
     print(json.dumps({"target_updated": route, "target_price": str(target_price)}))
+    start_price_check(email, plan, route)
     return respond(200, saved)
 
 
@@ -89,6 +99,25 @@ def handler(event, context):
 # still running (#21). current_period_end and :now share one fixed-width UTC format, so a
 # string comparison is a time comparison.
 PAID = "(subscription_status = :active OR (subscription_status = :cancelled AND current_period_end >= :now))"
+
+
+def is_paid(row, now):
+    """PAID, for a row already in hand."""
+    status = row.get("subscription_status")
+    return status == "active" or (
+        status == "cancelled" and row.get("current_period_end", "") >= now.strftime(TIME_FORMAT)
+    )
+
+
+def start_price_check(email, plan, route):
+    """Asynchronously check the current fare against this subscriber's new target (best effort)."""
+    payload = {"origin": plan["origin"], "destination": plan["destination"], "route": route, "email": email}
+    try:
+        lambda_client.invoke(FunctionName=PARSER_FUNCTION, InvocationType="Event", Payload=json.dumps(payload).encode())
+    except Exception as err:  # the target is saved; the scheduled check will still see it
+        print(json.dumps({"route": route, "error": str(err), "note": "price check not started"}))
+        return
+    print(json.dumps({"price_check_started": route}))
 
 
 def save_target(email, route, plan_name, plan, target_price, now):
