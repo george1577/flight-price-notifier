@@ -98,6 +98,16 @@ def test_form_values_are_html_escaped(save):
     assert form["fields"]["CheckMacValue"] == ecpay_cmv(form["fields"])
 
 
+def test_missing_ecpay_secret_fails_without_saving_a_row(monkeypatch, subscriptions_table):
+    monkeypatch.setenv("API_BASE_URL", API)
+    save = load_lambda("flight-save-subscription").handler
+
+    with pytest.raises(Exception):
+        subscribe(save, AMY_TOKYO)
+
+    assert subscriptions_table.scan()["Items"] == []
+
+
 # --------------------------------------------------------------- the row
 
 

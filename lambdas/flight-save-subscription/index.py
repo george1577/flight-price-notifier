@@ -49,6 +49,7 @@ def handler(event, context):
     except BadRequest as err:
         return respond(400, {"message": str(err)})
 
+    ecpay_config()  # fail before writing anything if flight/ecpay is missing or malformed
     plan = PLANS[plan_name]
     route = f"{plan['origin']}-{plan['destination']}"
     now = datetime.now(timezone.utc)
