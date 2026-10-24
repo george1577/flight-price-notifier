@@ -160,6 +160,16 @@ def test_seoul_route_uses_seoul_in_subject_and_link(monkeypatch, secrets, notifi
     assert "https://www.aviasales.com/search/TPE1211SEL1811" in sent["html"]
 
 
+def test_london_route_uses_london_in_subject_and_link(monkeypatch, secrets, notification_history_table):
+    fn, resend = setup(monkeypatch)
+
+    fn.handler(sqs_event(match(route="TPE-LON", plan="london")), None)
+
+    sent = resend.sent()[0]
+    assert sent["subject"] == "✈️ 台北 → 倫敦 降價通知！NT$9,325 已達標"
+    assert "https://www.aviasales.com/search/TPE1211LON1811" in sent["html"]
+
+
 def test_booking_link_gets_marker_only_when_configured(monkeypatch, secrets, notification_history_table):
     secrets.put_secret_value(
         SecretId="flight/travelpayouts", SecretString=json.dumps({"token": "tp-token", "marker": "736582"})
