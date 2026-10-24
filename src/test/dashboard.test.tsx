@@ -53,7 +53,7 @@ const CHECKOUT_HTML =
   '<input type="hidden" name="MerchantTradeNo" value="FP2610241200001A2B3C"></form>' +
   "<script>document.forms[0].submit()</script></body></html>";
 
-/** POST /subscribe's answer for an unpaid plan: the ECPay auto-submit checkout page. */
+/** POST /checkout's answer for an unpaid plan: the ECPay auto-submit checkout page. */
 function checkoutResponse() {
   return new Response(CHECKOUT_HTML, {
     status: 200,
@@ -84,15 +84,17 @@ type Reply = Response | Error | (() => Response | Promise<Response>);
 
 /**
  * Route fetch calls: GET /subscriptions → `list` (default: none), POST /subscribe →
- * `subscribe`, POST /cancel → `cancel`.
+ * `subscribe`, POST /checkout → `checkout`, POST /cancel → `cancel`.
  */
 function mockApi({
   list = [],
   subscribe,
+  checkout,
   cancel,
 }: {
   list?: unknown[] | Reply;
   subscribe?: Reply;
+  checkout?: Reply;
   cancel?: Reply;
 }) {
   const reply = (r: Reply | undefined) => {
@@ -106,6 +108,7 @@ function mockApi({
       return reply(Array.isArray(list) ? jsonResponse(200, list) : list);
     }
     if (url.endsWith("/subscribe")) return reply(subscribe);
+    if (url.endsWith("/checkout")) return reply(checkout);
     if (url.endsWith("/cancel")) return reply(cancel);
     return Promise.reject(new Error(`unexpected request ${url}`));
   });
@@ -123,8 +126,18 @@ function subscribeRequests() {
   );
 }
 
+function checkoutRequests() {
+  return (fetchMock.mock.calls as [string, RequestInit][]).filter(([url]) =>
+    url.endsWith("/checkout"),
+  );
+}
+
+/** The body of the `index`th save, whether it went to /subscribe or /checkout. */
 function sentBody(index = 0) {
-  return JSON.parse(String(subscribeRequests()[index]?.[1].body));
+  const saves = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+    ([url]) => url.endsWith("/subscribe") || url.endsWith("/checkout"),
+  );
+  return JSON.parse(String(saves[index]?.[1].body));
 }
 
 beforeEach(() => {
@@ -164,17 +177,17 @@ describe("Dashboard plan cards", () => {
     expect(within(card(/台北 ✈ 倫敦/)).getByText(/NT\$30,443/)).toBeInTheDocument();
   });
 
-  it("subscribes to a plan by POSTing the email, plan and target to the API", async () => {
-    mockApi({ subscribe: checkoutResponse() });
+  it("starts checkout for a plan by POSTing the email, plan and target to /checkout", async () => {
+    mockApi({ checkout: checkoutResponse() });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
     fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "10000" } });
     fireEvent.click(within(tokyo).getByRole("button", { name: "開始追蹤" }));
 
-    await waitFor(() => expect(subscribeRequests()).toHaveLength(1));
-    const [url, init] = subscribeRequests()[0]!;
-    expect(url).toBe(`${API}/subscribe`);
+    await waitFor(() => expect(checkoutRequests()).toHaveLength(1));
+    const [url, init] = checkoutRequests()[0]!;
+    expect(url).toBe(`${API}/checkout`);
     expect(init.method).toBe("POST");
     expect(sentBody()).toEqual({
       email: "amy@example.com",
@@ -183,8 +196,8 @@ describe("Dashboard plan cards", () => {
     });
   });
 
-  it("hands the page to ECPay's cashier when /subscribe answers with the checkout form", async () => {
-    mockApi({ subscribe: checkoutResponse() });
+  it("hands the page to ECPay's cashier when /checkout answers with the checkout form", async () => {
+    mockApi({ checkout: checkoutResponse() });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
@@ -197,14 +210,14 @@ describe("Dashboard plan cards", () => {
   });
 
   it("sends the Seoul plan from the Seoul card", async () => {
-    mockApi({ subscribe: checkoutResponse() });
+    mockApi({ checkout: checkoutResponse() });
     renderDashboard();
 
     const seoul = card(/台北 ✈ 首爾/);
     fireEvent.change(within(seoul).getByLabelText(/目標價/), { target: { value: "5,500" } });
     fireEvent.click(within(seoul).getByRole("button", { name: "開始追蹤" }));
 
-    await waitFor(() => expect(subscribeRequests()).toHaveLength(1));
+    await waitFor(() => expect(checkoutRequests()).toHaveLength(1));
     expect(sentBody()).toEqual({
       email: "amy@example.com",
       plan_name: "seoul",
@@ -226,10 +239,11 @@ describe("Dashboard plan cards", () => {
 
     expect(await within(tokyo).findByRole("alert")).toHaveTextContent(/大於 0/);
     expect(subscribeRequests()).toHaveLength(0);
+    expect(checkoutRequests()).toHaveLength(0);
   });
 
   it("shows the API's message when the save is rejected", async () => {
-    mockApi({ subscribe: jsonResponse(400, { message: "Unknown plan_name" }) });
+    mockApi({ checkout: jsonResponse(400, { message: "Unknown plan_name" }) });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
@@ -241,7 +255,7 @@ describe("Dashboard plan cards", () => {
   });
 
   it("shows an error when the network fails, and keeps the other card usable", async () => {
-    mockApi({ subscribe: new TypeError("Failed to fetch") });
+    mockApi({ checkout: new TypeError("Failed to fetch") });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
@@ -290,7 +304,7 @@ describe("Dashboard subscribed state", () => {
   it("完成付款 restarts checkout for the saved target and hands off to the cashier", async () => {
     mockApi({
       list: [savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")],
-      subscribe: checkoutResponse(),
+      checkout: checkoutResponse(),
     });
     renderDashboard();
 
@@ -308,7 +322,7 @@ describe("Dashboard subscribed state", () => {
   it("完成付款 uses a newly typed target when there is one", async () => {
     mockApi({
       list: [savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")],
-      subscribe: checkoutResponse(),
+      checkout: checkoutResponse(),
     });
     renderDashboard();
 
@@ -317,7 +331,7 @@ describe("Dashboard subscribed state", () => {
     fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "8000" } });
     fireEvent.click(within(tokyo).getByRole("button", { name: "完成付款" }));
 
-    await waitFor(() => expect(subscribeRequests()).toHaveLength(1));
+    await waitFor(() => expect(checkoutRequests()).toHaveLength(1));
     expect(sentBody().target_price).toBe(8000);
   });
 
@@ -343,6 +357,37 @@ describe("Dashboard subscribed state", () => {
     });
     expect(documentCalls).toEqual([]);
     expect(listRequests()).toHaveLength(1);
+    expect(checkoutRequests()).toHaveLength(0); // a paid plan never goes back to the cashier
+  });
+
+  // The bug a stale backend caused: /checkout answering JSON for an unpaid plan used to look
+  // like a successful save, so 完成付款 silently did nothing.
+  it("完成付款 shows an error when the API answers without a checkout page", async () => {
+    mockApi({
+      list: [savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")],
+      checkout: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.click(await within(tokyo).findByRole("button", { name: "完成付款" }));
+
+    expect(await within(tokyo).findByRole("alert")).toHaveTextContent(/無法開啟付款頁面/);
+    expect(documentCalls).toEqual([]);
+  });
+
+  it("完成付款 shows an error when the backend has no /checkout yet", async () => {
+    mockApi({
+      list: [savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")],
+      checkout: jsonResponse(404, { message: "Not Found" }),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.click(await within(tokyo).findByRole("button", { name: "完成付款" }));
+
+    expect(await within(tokyo).findByRole("alert")).toHaveTextContent(/訂閱失敗/);
+    expect(documentCalls).toEqual([]);
   });
 
   it.each([
@@ -351,7 +396,7 @@ describe("Dashboard subscribed state", () => {
   ])(
     "still renders every plan as unsubscribed, with a notice, when %s",
     async (_label, failure) => {
-      mockApi({ list: failure, subscribe: checkoutResponse() });
+      mockApi({ list: failure, checkout: checkoutResponse() });
       renderDashboard();
       await waitFor(() => expect(listRequests()).toHaveLength(1));
 
@@ -577,7 +622,7 @@ describe("Dashboard cancel and grace period", () => {
     ["a cancelled plan with no paid-through date", "cancelled", undefined],
   ])("shows %s as 已結束, and 重新訂閱 goes back through checkout", async (_label, status, end) => {
     const row = end ? paidRow(status, end) : savedRow("tokyo", "TPE-TYO", 10000, status);
-    mockApi({ list: [row], subscribe: checkoutResponse() });
+    mockApi({ list: [row], checkout: checkoutResponse() });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);

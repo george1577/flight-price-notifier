@@ -30,8 +30,10 @@ USER_AGENT = "Mozilla/5.0 (compatible; flight-notifier/1.0)"
 DEFAULT_FROM = "onboarding@resend.dev"  # demo sender until M3 verifies a domain
 DROP_STATUSES = {403, 422}
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
-history_table = boto3.resource("dynamodb").Table("notification_history")
+history_table = boto3.resource("dynamodb").Table(os.environ.get("HISTORY_TABLE", "notification_history"))
 _resend = None  # cached per warm container; changing the secret needs a cold start
 _UNSET = object()
 _marker = _UNSET
@@ -190,7 +192,7 @@ def render_text(fare, target_price, marker=None, usd_price=None):
 def resend_config():
     global _resend
     if _resend is None:
-        raw = json.loads(secrets.get_secret_value(SecretId="flight/resend")["SecretString"])
+        raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}resend")["SecretString"])
         _resend = {"api_key": raw["api_key"], "from": raw.get("from") or DEFAULT_FROM}
     return _resend
 
@@ -200,7 +202,7 @@ def affiliate_marker():
     global _marker
     if _marker is _UNSET:
         try:
-            raw = json.loads(secrets.get_secret_value(SecretId="flight/travelpayouts")["SecretString"])
+            raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}travelpayouts")["SecretString"])
             value = raw.get("marker") if isinstance(raw, dict) else None
             marker = str(value).strip() if value else ""
             _marker = marker or None

@@ -78,7 +78,8 @@ export function PlanCard({
       return;
     }
     setValidationError(null);
-    save.mutate({ plan_name: plan.name, target_price });
+    // Paid plans only change the target; everything else goes through the cashier.
+    save.mutate({ plan_name: plan.name, target_price, checkout: state !== "active" && state !== "grace" });
   }
 
   const error =

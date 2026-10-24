@@ -1,22 +1,42 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Flight Price Notifier M1 (free notifier). Single stack, us-east-1, no VPC, no SNS.
-  Deploy with `aws cloudformation package` + `deploy` (see infra/README.md): each
-  Lambda's Code points at its local lambdas/<function-name>/ directory.
+  Flight Price Notifier. One template, two stacks: flight-m1 (Env=prod) and flight-dev
+  (Env=dev). us-east-1, no VPC, no SNS. Deploy with infra/deploy.sh (see infra/README.md):
+  each Lambda's Code points at its local lambdas/<function-name>/ directory.
 
 # Conventions for later tickets:
 # - Add resources here; never create M1 resources by hand.
 # - IAM: every Lambda uses FlightLambdaRole. MERGE new statements into its single
 #   `flight-data` inline policy below; never drop or replace existing statements.
 # - Lambdas: python3.12, handler index.handler, Code: ../lambdas/<function-name>/
+# - Environments: every physical name is `!If [IsDev, <name>-dev, <name>]`. NEVER change a
+#   prod name: CloudFormation replaces a renamed table/queue/bucket/role (new, empty table).
+#   Lambdas get table names and the secrets prefix from env vars, never hard-coded.
 
 Parameters:
+  Env:
+    Type: String
+    AllowedValues: [prod, dev]
+    Default: prod
+    Description: >-
+      prod = the live stack (flight-m1, today's names). dev = an isolated copy (flight-dev):
+      every name gets -dev, secrets come from flight-dev/*, the schedule is off.
   SiteUrl:
     Type: String
     Description: >-
-      Public URL of the SPA (no trailing slash), e.g. https://<project>.vercel.app.
-      flight-ecpay-result redirects the browser to <SiteUrl>/app after ECPay's cashier.
-    AllowedPattern: ^https://\S+$
+      Public URL of the SPA (no trailing slash), e.g. https://<project>.vercel.app, or
+      http://localhost:8080 for the dev stack. flight-ecpay-result redirects the browser to
+      <SiteUrl>/app after ECPay's cashier.
+    AllowedPattern: ^https?://\S+$
+  BackendVersion:
+    Type: String
+    Default: unknown
+    Description: >-
+      Stamped by infra/deploy.sh (git tree ids of lambdas/ and infra/). GET /version returns
+      it so the dev frontend can warn when the deployed backend doesn't match the checkout.
+
+Conditions:
+  IsDev: !Equals [!Ref Env, dev]
 
 Rules:
   OnlyUsEast1:
@@ -31,7 +51,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: subscriptions
+      TableName: !If [IsDev, subscriptions-dev, subscriptions]
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: email, AttributeType: S }
@@ -45,7 +65,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: notification_history
+      TableName: !If [IsDev, notification_history-dev, notification_history]
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S } # "{email}#{route}"
@@ -60,7 +80,7 @@ Resources:
   FlightFareQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: flight-fare-queue
+      QueueName: !If [IsDev, flight-fare-queue-dev, flight-fare-queue]
       VisibilityTimeout: 180
       MessageRetentionPeriod: 345600 # 4 days
 
@@ -69,7 +89,7 @@ Resources:
   FlightStatusQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: flight-status-queue
+      QueueName: !If [IsDev, flight-status-queue-dev, flight-status-queue]
       VisibilityTimeout: 180
       MessageRetentionPeriod: 345600 # 4 days
 
@@ -77,7 +97,7 @@ Resources:
   FlightLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: flight-lambda-role
+      RoleName: !If [IsDev, flight-lambda-role-dev, flight-lambda-role]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -94,7 +114,10 @@ Resources:
               - Sid: FlightSecrets
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flight/*
+                Resource: !If
+                  - IsDev
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flight-dev/*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flight/*
               # Also covers flight-status-notification (M2): GetItem + UpdateItem on
               # subscriptions to skip and record sent welcome/cancel emails.
               - Sid: FlightTables
@@ -117,11 +140,13 @@ Resources:
               - Sid: FlightConfigObjects # flight-parser-wrapper reads flight-routes.json (read-only)
                 Effect: Allow
                 Action: s3:GetObject
-                Resource: !Sub arn:aws:s3:::flight-config-${AWS::AccountId}/flight-routes.json
+                Resource: !Sub arn:aws:s3:::${FlightConfigBucket}/flight-routes.json
               - Sid: FlightParserInvoke # flight-parser-wrapper fans out per route
                 Effect: Allow
                 Action: lambda:InvokeFunction
-                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:flight-parser
+                Resource: !Sub
+                  - arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Name}
+                  - Name: !If [IsDev, flight-parser-dev, flight-parser] # not !GetAtt: circular via the role
               # flight-fare-notification's event-source mapping needs ALL THREE, or it
               # silently never polls.
               - Sid: FlightFareQueueConsume
@@ -154,7 +179,7 @@ Resources:
   SaveSubscriptionFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-save-subscription
+      FunctionName: !If [IsDev, flight-save-subscription-dev, flight-save-subscription]
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt FlightLambdaRole.Arn
@@ -163,6 +188,9 @@ Resources:
       Code: ../lambdas/flight-save-subscription/
       Environment:
         Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
           API_BASE_URL: !Sub https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com
           # ECPay billing period (#22). To test renewals set D / 1 / 2 (daily, two charges),
           # pay once, check flight-ecpay-period the next day, then switch back to M / 1 / 999.
@@ -173,7 +201,7 @@ Resources:
   ParserFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-parser
+      FunctionName: !If [IsDev, flight-parser-dev, flight-parser]
       Description: One route per invocation; cheapest Travelpayouts fare -> flight-fare-queue matches.
       Runtime: python3.12
       Handler: index.handler
@@ -183,6 +211,9 @@ Resources:
       Code: ../lambdas/flight-parser/
       Environment:
         Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
           QUEUE_NAME: !GetAtt FlightFareQueue.QueueName
 
   # ------------------------------------------------- Scheduled check (#8)
@@ -193,7 +224,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub flight-config-${AWS::AccountId}
+      BucketName: !If [IsDev, !Sub "flight-config-dev-${AWS::AccountId}", !Sub "flight-config-${AWS::AccountId}"]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -203,7 +234,7 @@ Resources:
   ParserWrapperFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-parser-wrapper
+      FunctionName: !If [IsDev, flight-parser-wrapper-dev, flight-parser-wrapper]
       Description: Reads flight-routes.json from S3; async-invokes flight-parser once per route.
       Runtime: python3.12
       Handler: index.handler
@@ -220,9 +251,9 @@ Resources:
   FlightPriceCheckRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: flight-price-check
+      Name: !If [IsDev, flight-price-check-dev, flight-price-check]
       ScheduleExpression: rate(30 minutes)
-      State: ENABLED
+      State: !If [IsDev, DISABLED, ENABLED] # dev: invoke flight-parser-wrapper-dev by hand
       Targets:
         - Id: flight-parser-wrapper
           Arn: !GetAtt ParserWrapperFunction.Arn
@@ -240,7 +271,7 @@ Resources:
   FareNotificationFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-fare-notification
+      FunctionName: !If [IsDev, flight-fare-notification-dev, flight-fare-notification]
       Description: flight-fare-queue consumer; emails a matched subscriber via Resend.
       Runtime: python3.12
       Handler: index.handler
@@ -250,6 +281,9 @@ Resources:
       Code: ../lambdas/flight-fare-notification/
       Environment:
         Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
           # Dedup / re-alert thresholds (#10), compared on the TWD price only.
           NOTIFY_FLOOR_HOURS: "24"
           REALERT_PCT: "20"
@@ -271,7 +305,7 @@ Resources:
   FlightApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
-      Name: flight-api
+      Name: !If [IsDev, flight-api-dev, flight-api]
       ProtocolType: HTTP
       CorsConfiguration:
         AllowOrigins: ["*"]
@@ -309,19 +343,42 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/subscribe
 
+  # POST /checkout: starts (or restarts) an ECPay checkout and answers the HTML form.
+  # POST /subscribe stays JSON-only, so a frontend and backend from different releases
+  # never break each other while they deploy at different moments.
+  CheckoutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FlightApi
+      RouteKey: POST /checkout
+      Target: !Sub integrations/${SaveSubscriptionIntegration}
+
+  CheckoutApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SaveSubscriptionFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/checkout
+
   # GET /subscriptions?email=... (ticket #6). Needs dynamodb:Query on SubscriptionsTable
   # (already in flight-data) and GET in the FlightApi CORS AllowMethods (already there).
   # Known gap, accepted for M1: the API trusts the client-sent email (no JWT check).
   ListSubscriptionsFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-list-subscriptions
+      FunctionName: !If [IsDev, flight-list-subscriptions-dev, flight-list-subscriptions]
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt FlightLambdaRole.Arn
       Timeout: 10
       MemorySize: 128
       Code: ../lambdas/flight-list-subscriptions/
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
 
   ListSubscriptionsIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -354,7 +411,7 @@ Resources:
   CancelSubscriptionFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-cancel-subscription
+      FunctionName: !If [IsDev, flight-cancel-subscription-dev, flight-cancel-subscription]
       Description: Stops the ECPay recurring order and marks the subscription cancelled (grace period).
       Runtime: python3.12
       Handler: index.handler
@@ -364,6 +421,9 @@ Resources:
       Code: ../lambdas/flight-cancel-subscription/
       Environment:
         Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
           STATUS_QUEUE_NAME: !GetAtt FlightStatusQueue.QueueName
 
   CancelSubscriptionIntegration:
@@ -395,7 +455,7 @@ Resources:
   EcpayResultFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-ecpay-result
+      FunctionName: !If [IsDev, flight-ecpay-result-dev, flight-ecpay-result]
       Description: ECPay OrderResultURL; 302s the browser back to the dashboard.
       Runtime: python3.12
       Handler: index.handler
@@ -437,7 +497,7 @@ Resources:
   EcpayReturnFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-ecpay-return
+      FunctionName: !If [IsDev, flight-ecpay-return-dev, flight-ecpay-return]
       Description: ECPay ReturnURL; verifies the first charge and activates the subscription.
       Runtime: python3.12
       Handler: index.handler
@@ -447,6 +507,9 @@ Resources:
       Code: ../lambdas/flight-ecpay-return/
       Environment:
         Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
           STATUS_QUEUE_NAME: !GetAtt FlightStatusQueue.QueueName
 
   EcpayReturnIntegration:
@@ -479,7 +542,7 @@ Resources:
   EcpayPeriodFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-ecpay-period
+      FunctionName: !If [IsDev, flight-ecpay-period-dev, flight-ecpay-period]
       Description: ECPay PeriodReturnURL; verifies each renewal and extends or expires the subscription.
       Runtime: python3.12
       Handler: index.handler
@@ -487,6 +550,11 @@ Resources:
       Timeout: 10
       MemorySize: 128
       Code: ../lambdas/flight-ecpay-period/
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
 
   EcpayPeriodIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -518,7 +586,7 @@ Resources:
   StatusNotificationFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: flight-status-notification
+      FunctionName: !If [IsDev, flight-status-notification-dev, flight-status-notification]
       Description: flight-status-queue consumer; welcome / cancel emails via Resend.
       Runtime: python3.12
       Handler: index.handler
@@ -526,6 +594,11 @@ Resources:
       Timeout: 30
       MemorySize: 128
       Code: ../lambdas/flight-status-notification/
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !Ref SubscriptionsTable
+          HISTORY_TABLE: !Ref NotificationHistoryTable
+          SECRETS_PREFIX: !If [IsDev, flight-dev/, flight/]
 
   # BatchSize 1: a raised 429/5xx redelivers only that message.
   StatusNotificationQueueMapping:
@@ -536,6 +609,48 @@ Resources:
       BatchSize: 1
       ScalingConfig:
         MaximumConcurrency: 2 # stays under Resend's 5 req/s, shared with the fare alerts
+
+  # ------------------------------------------------------- GET /version
+  # Which backend build is deployed (BackendVersion, stamped by infra/deploy.sh). The dev
+  # frontend compares it with the local checkout and shows a banner on a mismatch.
+  VersionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !If [IsDev, flight-version-dev, flight-version]
+      Description: GET /version; the deployed backend version and environment.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 3
+      MemorySize: 128
+      Code: ../lambdas/flight-version/
+      Environment:
+        Variables:
+          BACKEND_VERSION: !Ref BackendVersion
+          STACK_ENV: !Ref Env
+
+  VersionIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FlightApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt VersionFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  VersionRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FlightApi
+      RouteKey: GET /version
+      Target: !Sub integrations/${VersionIntegration}
+
+  VersionApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VersionFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/version
 
 Outputs:
   ApiBaseUrl:

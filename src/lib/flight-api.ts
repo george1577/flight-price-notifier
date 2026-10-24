@@ -66,10 +66,10 @@ export function paymentState(subscription: Subscription, now: Date = new Date())
 }
 
 /**
- * POST /subscribe's answer: either ECPay's auto-submit checkout page (`text/html`), or the
- * row updated in place (`application/json`) for a plan that is already paid.
+ * POST /checkout's answer: either ECPay's auto-submit checkout page (`text/html`), or, for a
+ * plan that turned out to be paid already, the row updated in place (`application/json`).
  */
-export type SubscribeResult =
+export type CheckoutResult =
   { kind: "checkout"; html: string } | { kind: "saved"; subscription: Subscription };
 
 export type SubscribeInput = {
@@ -130,18 +130,32 @@ export function listSubscriptions(email: string) {
 }
 
 /**
- * POST /subscribe: save the target for (email, route). An unpaid plan comes back as ECPay's
- * checkout page (hand it to `openCashier`); a paid plan comes back as the updated row.
+ * POST /subscribe: save the target and get the row back (JSON). Used for paid plans: it
+ * never starts a checkout and never changes the payment state.
  */
-export async function saveSubscription(input: SubscribeInput): Promise<SubscribeResult> {
-  const response = await send("/subscribe", {
+export function saveTarget(input: SubscribeInput) {
+  return request<Subscription>("/subscribe", { method: "POST", body: JSON.stringify(input) });
+}
+
+/**
+ * POST /checkout: save the target and start an ECPay checkout. An unpaid plan comes back as
+ * ECPay's checkout page (hand it to `openCashier`). A plan that is already paid comes back as
+ * the updated row. Anything else (e.g. an unpaid row as JSON from an out-of-date backend) is
+ * an error, so the button never silently does nothing.
+ */
+export async function startCheckout(input: SubscribeInput): Promise<CheckoutResult> {
+  const response = await send("/checkout", {
     method: "POST",
     body: JSON.stringify(input),
   });
-  if ((response.headers.get("content-type") ?? "").includes("text/html")) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("text/html")) {
     return { kind: "checkout", html: await response.text() };
   }
-  return { kind: "saved", subscription: (await response.json()) as Subscription };
+  const row = (await response.json().catch(() => null)) as Subscription | null;
+  const state = row ? paymentState(row) : null;
+  if (state === "active" || state === "grace") return { kind: "saved", subscription: row! };
+  throw new ApiError("無法開啟付款頁面：伺服器沒有回傳付款頁（後端可能尚未部署最新版本）。");
 }
 
 /**

@@ -1,51 +1,76 @@
-# Flight Price Notifier: M1 infrastructure
+# Flight Price Notifier: infrastructure
 
-Everything M1 needs on AWS is in one CloudFormation template, `flight-m1.yaml`
-(region `us-east-1`, no VPC, no SNS). The Lambda code lives in
-`../lambdas/<function-name>/index.py`; the template points at those folders and
-`aws cloudformation package` zips and uploads them.
+Everything on AWS is in one CloudFormation template, `flight-m1.yaml` (region
+`us-east-1`, no VPC, no SNS). The Lambda code lives in `../lambdas/<function-name>/index.py`;
+the template points at those folders and `aws cloudformation package` zips and uploads them.
 
-## Deploy
+## Environments and deploys
 
-One-time: an S3 bucket that holds the packaged Lambda zips.
+The same template is deployed twice, so testing never touches real users:
+
+| | prod | dev |
+|---|---|---|
+| Stack | `flight-m1` | `flight-dev` |
+| Names | `subscriptions`, `flight-api`, `flight-parser`, ... | the same, with `-dev` |
+| Secrets | `flight/*` | `flight-dev/*` (stage ECPay merchant) |
+| Scheduled price check | every 30 min | off (invoke `flight-parser-wrapper-dev` by hand) |
+| `SiteUrl` (ECPay return) | `https://flight-price-notifier-bice.vercel.app` | `http://localhost:8080` |
+| Deployed by | push to `main` | push to `dev`, or `infra/deploy.sh dev` |
+| Frontend | Vercel production (deploy hook, after the backend) | `npm run dev` with `.env.local`, Vercel previews |
+
+**Never rename a prod resource.** CloudFormation replaces a renamed table, queue, bucket or
+role, which means a new, empty table. `tests/test_template.py` pins every prod name.
+
+**Keep the API backward compatible** (expand, then switch, then contract). The backend and
+the frontend deploy at different moments, so every backend release must still work with the
+previous frontend, and the reverse. For example, `POST /subscribe` stays JSON-only, and the
+checkout page has its own `POST /checkout`. Add things; remove them in a later release.
+
+### Automatic: GitHub Actions (`.github/workflows/deploy.yml`)
+
+- **Push to `dev`:** tests, then `infra/deploy.sh dev`.
+- **Push to `main`:** tests, `infra/deploy.sh prod`, then the Vercel deploy hook for the prod
+  frontend. `vercel.json` turns off Vercel's own auto-deploy for `main`, so the frontend can
+  never go out before its backend.
+- `deploy.sh` fails the run unless `GET /version` reports the version it just deployed.
+- Watch a run with `gh run watch`. A green check on the commit means that backend is live.
+
+### By hand: `infra/deploy.sh`
+
+Try backend changes on the dev stack before pushing (needs AWS credentials for the account):
 
 ```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-aws s3 mb s3://flight-artifacts-$ACCOUNT_ID --region us-east-1
+infra/deploy.sh dev                                                     # flight-dev
+SITE_URL=https://flight-price-notifier-bice.vercel.app infra/deploy.sh prod   # flight-m1, rarely
 ```
 
-Each deploy (run from the repo root):
+### Am I talking to the backend I think I am?
+
+`GET <api>/version` returns `{backend_version, env}`. `infra/backend-version.sh` computes the
+same id from your checkout (every `lambdas/flight-*/` folder plus `infra/`, committed or not).
+In `npm run dev` a banner appears when they differ, and clears itself once the deploy lands.
+
+### One-time setup (already done for this account)
+
+1. Artifact bucket: `aws s3 mb s3://flight-artifacts-$ACCOUNT_ID --region us-east-1`.
+2. GitHub deploy role: deploy `github-deploy-role.yaml` as stack `flight-github-deploy`
+   (`--capabilities CAPABILITY_NAMED_IAM`). It trusts only this repo's `dev` and `main`
+   branches through GitHub OIDC, so no AWS keys are stored in GitHub.
+3. GitHub repository variables: `AWS_DEPLOY_ROLE_ARN` (that stack's output) and
+   `PROD_SITE_URL`.
+4. GitHub secret `VERCEL_DEPLOY_HOOK_PROD`: create a deploy hook for branch `main` in Vercel
+   (Project Settings, Git, Deploy Hooks), then run `gh secret set VERCEL_DEPLOY_HOOK_PROD`.
+5. Dev secrets: `flight-dev/ecpay`, `flight-dev/resend`, `flight-dev/travelpayouts` (copies
+   of the prod ones; dev always uses ECPay's stage merchant).
+6. Frontend API URLs: Vercel's `VITE_FLIGHT_API_URL` is the prod `ApiBaseUrl` for
+   Production and the dev one for Preview. Your local `.env.local` uses the dev one.
+
+Read a stack's API URL:
 
 ```bash
-aws cloudformation package --region us-east-1 \
-  --template-file infra/flight-m1.yaml \
-  --s3-bucket flight-artifacts-$ACCOUNT_ID \
-  --output-template-file /tmp/flight-m1.packaged.yaml
-
-aws cloudformation deploy --region us-east-1 \
-  --stack-name flight-m1 \
-  --template-file /tmp/flight-m1.packaged.yaml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides SiteUrl=https://<your-site>.vercel.app
-```
-
-`SiteUrl` is the public URL of the SPA (no trailing slash). `flight-ecpay-result`
-redirects the browser to `<SiteUrl>/app?purchase=...` after ECPay's cashier. It is
-required on the first deploy; later deploys keep the previous value unless you pass it again.
-
-**M2 release order:** create `flight/ecpay` (below), deploy the stack, then release the
-front end in the same release. From this deploy on, `POST /subscribe` answers with an
-HTML checkout page instead of JSON, and the old client breaks on it.
-
-Then read the API URL and give it to the frontend:
-
-```bash
-aws cloudformation describe-stacks --region us-east-1 --stack-name flight-m1 \
+aws cloudformation describe-stacks --region us-east-1 --stack-name flight-dev \
   --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" --output text
 ```
-
-Set it as `VITE_FLIGHT_API_URL` (no trailing slash) in Vercel's project env vars and
-in your local `.env.local`, then redeploy the site. See `../.env.example`.
 
 ## Things CloudFormation does not do
 
@@ -55,9 +80,9 @@ in your local `.env.local`, then redeploy the site. See `../.env.example`.
   [import them](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import.html))
   or the stack create fails with "already exists". The tables have
   `DeletionPolicy: Retain`, so deleting the stack keeps your data.
-- **Routes config object.** The stack creates the `flight-config-<account>` bucket but
-  CloudFormation can't put objects in it. After every deploy that changes the routes
-  (and once after the first deploy), upload the committed list:
+- **Routes config object.** The stack creates the `flight-config-<account>` bucket
+  (`flight-config-dev-<account>` for dev), but CloudFormation can't put objects in it.
+  `infra/deploy.sh` uploads the committed list on every deploy. By hand:
 
   ```bash
   aws s3 cp infra/flight-routes.json s3://flight-config-$ACCOUNT_ID/flight-routes.json \
@@ -71,7 +96,8 @@ in your local `.env.local`, then redeploy the site. See `../.env.example`.
   `FlightPriceCheckRule` and redeploy.
 
 - **Secrets.** `flight/*` secrets (`flight/travelpayouts`, `flight/resend`, `flight/ecpay`)
-  are created in the prerequisites, not here. The role is only granted read access to them.
+  are created in the prerequisites, not here; the dev stack reads `flight-dev/*` copies. Each
+  stack's role is only granted read access to its own prefix.
 - **`flight/ecpay` (M2).** Create it before deploying M2, or `POST /subscribe` fails. M2
   runs on ECPay's public stage test merchant:
 

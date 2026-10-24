@@ -18,6 +18,7 @@ import base64
 import calendar
 import hashlib
 import json
+import os
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
@@ -28,8 +29,10 @@ MAX_FAILED_CHARGES = 6  # ECPay terminates the series on the 6th consecutive fai
 ACTIVE, CANCELLED, EXPIRED = "active", "cancelled", "expired"
 PAID_UP_VALUES = {":active": ACTIVE, ":cancelled": CANCELLED}  # for `subscription_status IN (:active, :cancelled)`
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _ecpay = None  # cached per warm container; changing the secret needs a cold start
 
 
@@ -218,7 +221,7 @@ def ecpay_config():
     """{merchant_id, hash_key, hash_iv} from flight/ecpay (stripped), cached per warm container."""
     global _ecpay
     if _ecpay is None:
-        raw = json.loads(secrets.get_secret_value(SecretId="flight/ecpay")["SecretString"])
+        raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}ecpay")["SecretString"])
         _ecpay = {k: str(raw[k]).strip() for k in ("merchant_id", "hash_key", "hash_iv")}
     return _ecpay
 

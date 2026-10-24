@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  One-time bootstrap (stack flight-github-deploy): lets GitHub Actions deploy the flight
+  stacks without long-lived AWS keys. GitHub's OIDC token is exchanged for this role, and
+  only pushes to this repo's dev and main branches can assume it (.github/workflows/deploy.yml).
+  Changes here are deployed by hand; the workflow can't widen its own permissions.
+
+# Trade-off, accepted for now: one role serves both stacks, so a workflow run on dev could
+# technically deploy flight-m1. The workflow picks the stack from the branch; separate AWS
+# accounts per environment would remove this (see infra/README.md "Environments").
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: george1577/flight-price-notifier
+
+Rules:
+  OnlyUsEast1:
+    Assertions:
+      - Assert: !Equals [!Ref AWS::Region, us-east-1]
+        AssertDescription: Flight Price Notifier must be deployed in us-east-1.
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: flight-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Federated: !Ref GitHubOidcProvider }
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubRepo}:ref:refs/heads/dev
+                  - !Sub repo:${GitHubRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-flight-stacks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Stacks
+                Effect: Allow
+                Action: cloudformation:*
+                Resource:
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/flight-m1/*
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/flight-dev/*
+              - Sid: TemplateChecks # these CloudFormation reads have no resource scope
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStacks
+                Resource: "*"
+              - Sid: Artifacts # cloudformation package uploads the Lambda zips here
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:ListBucket, s3:GetBucketLocation]
+                Resource:
+                  - !Sub arn:aws:s3:::flight-artifacts-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::flight-artifacts-${AWS::AccountId}/*
+              - Sid: ConfigBuckets # FlightConfigBucket, plus the routes upload in deploy.sh
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:GetBucket*
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutBucketTagging
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutBucketOwnershipControls
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::flight-config-*${AWS::AccountId}
+                  - !Sub arn:aws:s3:::flight-config-*${AWS::AccountId}/*
+              - Sid: Tables
+                Effect: Allow
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:DescribeKinesisStreamingDestination
+                  - dynamodb:DescribeContributorInsights
+                  - dynamodb:ListTagsOfResource
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/subscriptions*
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notification_history*
+              - Sid: Queues
+                Effect: Allow
+                Action: sqs:*
+                Resource: !Sub arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:flight-*
+              - Sid: LambdaRole # the stacks' flight-lambda-role[-dev]
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PassRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/flight-lambda-role*
+              - Sid: Functions
+                Effect: Allow
+                Action: lambda:*
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:flight-*
+              - Sid: EventSourceMappings # their ARNs are random UUIDs
+                Effect: Allow
+                Action:
+                  - lambda:CreateEventSourceMapping
+                  - lambda:GetEventSourceMapping
+                  - lambda:UpdateEventSourceMapping
+                  - lambda:DeleteEventSourceMapping
+                  - lambda:ListEventSourceMappings
+                Resource: "*"
+              - Sid: Schedule
+                Effect: Allow
+                Action: events:*
+                Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/flight-*
+              - Sid: HttpApi # HTTP API ARNs carry a random id, so scope to the region
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub arn:aws:apigateway:${AWS::Region}::/apis
+                  - !Sub arn:aws:apigateway:${AWS::Region}::/apis/*
+                  - !Sub arn:aws:apigateway:${AWS::Region}::/tags/*
+
+Outputs:
+  DeployRoleArn:
+    Description: Set as the GitHub repository variable AWS_DEPLOY_ROLE_ARN.
+    Value: !GetAtt GitHubDeployRole.Arn

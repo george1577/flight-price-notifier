@@ -20,9 +20,13 @@ def subscribe(save, body):
     return save(api_event("POST", "/subscribe", body), None)
 
 
+def post_checkout(save, body):
+    return save(api_event("POST", "/checkout", body), None)
+
+
 def checkout(save, body):
-    """POST /subscribe expecting the ECPay checkout page; returns the parsed form."""
-    response = subscribe(save, body)
+    """POST /checkout expecting the ECPay checkout page; returns the parsed form."""
+    response = post_checkout(save, body)
     assert response["statusCode"] == 200
     assert response["headers"]["content-type"].startswith("text/html")
     return parse_checkout_form(response["body"])
@@ -129,7 +133,7 @@ def test_missing_ecpay_secret_fails_without_saving_a_row(monkeypatch, subscripti
     save = load_lambda("flight-save-subscription").handler
 
     with pytest.raises(Exception):
-        subscribe(save, AMY_TOKYO)
+        post_checkout(save, AMY_TOKYO)
 
     assert subscriptions_table.scan()["Items"] == []
 
@@ -197,7 +201,8 @@ ACTIVE = {
 }
 
 
-def test_an_active_subscriber_updates_the_target_in_place_without_paying_again(save, subscriptions_table):
+@pytest.mark.parametrize("send", [subscribe, post_checkout], ids=["/subscribe", "/checkout"])
+def test_an_active_subscriber_updates_the_target_in_place_without_paying_again(save, subscriptions_table, send):
     seeded = {
         "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo",
         "origin": "TPE", "destination": "TYO", "target_price": 12000, "currency": "TWD",
@@ -205,7 +210,7 @@ def test_an_active_subscriber_updates_the_target_in_place_without_paying_again(s
     }
     subscriptions_table.put_item(Item=seeded)
 
-    response = subscribe(save, {**AMY_TOKYO, "target_price": 9000})
+    response = send(save, {**AMY_TOKYO, "target_price": 9000})
 
     assert response["statusCode"] == 200
     assert response["headers"]["content-type"] == "application/json"
@@ -241,12 +246,13 @@ def seed_cancelled(table, period_end):
     return seeded
 
 
+@pytest.mark.parametrize("send", [subscribe, post_checkout], ids=["/subscribe", "/checkout"])
 def test_a_cancelled_subscriber_inside_the_paid_period_updates_the_target_and_stays_cancelled(
-    save, subscriptions_table
+    save, subscriptions_table, send
 ):
     seeded = seed_cancelled(subscriptions_table, "2999-01-01T00:00:00Z")
 
-    response = subscribe(save, {**AMY_TOKYO, "target_price": 9000})
+    response = send(save, {**AMY_TOKYO, "target_price": 9000})
 
     assert response["statusCode"] == 200
     assert response["headers"]["content-type"] == "application/json"
@@ -327,10 +333,42 @@ def test_accepts_a_numeric_string_target(save, subscriptions_table):
         pytest.param("[1, 2]", id="non-object body"),
     ],
 )
-def test_rejects_bad_input_with_a_4xx_message_and_saves_nothing(save, subscriptions_table, body):
-    response = subscribe(save, body)
+@pytest.mark.parametrize("send", [subscribe, post_checkout], ids=["/subscribe", "/checkout"])
+def test_rejects_bad_input_with_a_4xx_message_and_saves_nothing(save, subscriptions_table, body, send):
+    response = send(save, body)
 
     assert 400 <= response["statusCode"] < 500
     assert response["headers"]["content-type"] == "application/json"
     assert response_json(response)["message"]
     assert subscriptions_table.scan()["Items"] == []
+
+
+# ------------------------------------- POST /subscribe stays JSON (backward compatible)
+# A frontend from before /checkout existed still calls /subscribe and reads JSON. It must
+# keep working while the backend and frontend deploy at different moments: /subscribe only
+# saves the target and never starts a checkout or touches the payment state.
+
+
+def test_subscribe_for_a_new_user_saves_the_target_as_json_without_a_checkout(save, subscriptions_table):
+    response = subscribe(save, AMY_TOKYO)
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["content-type"] == "application/json"
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert row["target_price"] == 10000
+    assert row["plan_name"] == "tokyo"
+    assert "subscription_status" not in row  # unpaid: no alerts until /checkout + payment
+    assert "merchant_trade_no" not in row
+    assert response_json(response)["target_price"] == 10000
+
+
+def test_subscribe_on_a_pending_row_keeps_its_checkout_attempt(save, subscriptions_table):
+    trade_no = checkout(save, AMY_TOKYO)["fields"]["MerchantTradeNo"]
+
+    response = subscribe(save, {**AMY_TOKYO, "target_price": 9000})
+
+    assert response["headers"]["content-type"] == "application/json"
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert row["target_price"] == 9000
+    assert row["subscription_status"] == "pending_payment"
+    assert row["merchant_trade_no"] == trade_no

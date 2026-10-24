@@ -29,9 +29,11 @@ PERIOD_ACTION_URLS = {"stage": "https://payment-stage.ecpay.com.tw/Cashier/Credi
 ECPAY_STOPPED = {"1", "90100150", "90100149"}
 TIME_FORMAT ="%Y-%m-%dT%H:%M:%SZ"  # fixed width: the parser compares these as strings
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
 sqs = boto3.client("sqs")
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _ecpay = None  # cached per warm container; changing the secret needs a cold start
 _status_queue_url = None
 
@@ -160,7 +162,7 @@ def ecpay_config():
     """{merchant_id, hash_key, hash_iv, period_action_url} from flight/ecpay (stripped)."""
     global _ecpay
     if _ecpay is None:
-        raw = json.loads(secrets.get_secret_value(SecretId="flight/ecpay")["SecretString"])
+        raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}ecpay")["SecretString"])
         cfg = {k: str(raw[k]).strip() for k in ("merchant_id", "hash_key", "hash_iv")}
         cfg["period_action_url"] = PERIOD_ACTION_URLS[str(raw.get("env") or "stage").strip()]
         _ecpay = cfg

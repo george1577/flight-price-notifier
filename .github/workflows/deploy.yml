@@ -1,0 +1,69 @@
+# Push to dev  -> test, then deploy the flight-dev stack (backend only; Vercel builds dev
+#                 previews on its own, and the dev banner flags any backend lag).
+# Push to main -> test, deploy the flight-m1 (prod) stack, and only then deploy the prod
+#                 frontend through a Vercel deploy hook. vercel.json turns off Vercel's own
+#                 auto-deploy for main, so the frontend can never go out before its backend.
+#
+# Watch a run: `gh run watch`. Setup (one time): infra/README.md "Environments and deploys".
+name: Deploy
+
+on:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # GitHub OIDC -> the flight-github-deploy role; no AWS keys stored here
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false # never interrupt a CloudFormation update halfway
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Lambda tests
+        working-directory: lambdas
+        run: uv run pytest -q
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Type check
+        run: bunx tsc --noEmit
+      - name: Frontend tests
+        run: bunx vitest run
+
+  backend:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      STACK_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Deploy the ${{ env.STACK_ENV }} stack
+        env:
+          # prod: the live site. dev: unset -> http://localhost:8080 (infra/deploy.sh).
+          SITE_URL: ${{ github.ref_name == 'main' && vars.PROD_SITE_URL || vars.DEV_SITE_URL }}
+        run: infra/deploy.sh "$STACK_ENV"
+
+  frontend:
+    needs: backend
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy the production frontend (Vercel deploy hook)
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK_PROD }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::error::VERCEL_DEPLOY_HOOK_PROD is not set; the prod frontend was NOT deployed (infra/README.md)."
+            exit 1
+          fi
+          curl -fsS -X POST "$HOOK"

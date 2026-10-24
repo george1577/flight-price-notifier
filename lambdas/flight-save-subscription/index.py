@@ -1,7 +1,11 @@
-"""flight-save-subscription: POST /subscribe {email, plan_name, target_price}.
+"""flight-save-subscription: POST /subscribe and POST /checkout {email, plan_name, target_price}.
 
-A paid row (`active`, or `cancelled` but still inside its paid period) just gets the new
-target, in place, and keeps its status; the row comes back as JSON.
+POST /subscribe saves the target and always answers JSON, as in M1. It never starts a
+checkout and never touches the payment state, so a frontend from before /checkout existed
+keeps working while the backend and frontend deploy at different moments.
+
+POST /checkout: a paid row (`active`, or `cancelled` but still inside its paid period) just
+gets the new target, in place, and keeps its status; the row comes back as JSON.
 Anything else upserts one `subscriptions` row per (email, route), marks it
 `pending_payment` with a fresh MerchantTradeNo, and returns an auto-submit HTML form that
 sends the browser to ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only
@@ -39,8 +43,10 @@ TAIWAN = timezone(timedelta(hours=8))
 ITEM_NAME = "機票降價通知 月費訂閱"
 TRADE_DESC = "Flight Price Notifier monthly plan"
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _ecpay = None  # cached per warm container; changing the secret needs a cold start
 
 
@@ -54,11 +60,16 @@ def handler(event, context):
     except BadRequest as err:
         return respond(400, {"message": str(err)})
 
-    ecpay_config()  # fail before writing anything if flight/ecpay is missing or malformed
     plan = PLANS[plan_name]
     route = f"{plan['origin']}-{plan['destination']}"
     now = datetime.now(timezone.utc)
 
+    if not event.get("routeKey", "").endswith("/checkout"):
+        saved = save_target(email, route, plan_name, plan, target_price, now)
+        print(json.dumps({"target_saved": route, "target_price": str(target_price)}))
+        return respond(200, saved)
+
+    ecpay_config()  # fail before writing anything if flight/ecpay is missing or malformed
     # A paid plan only changes its target. Anything else goes (back) through the cashier.
     saved = update_paid_target(email, route, target_price, now)
     if saved is None:
@@ -78,6 +89,27 @@ def handler(event, context):
 # still running (#21). current_period_end and :now share one fixed-width UTC format, so a
 # string comparison is a time comparison.
 PAID = "(subscription_status = :active OR (subscription_status = :cancelled AND current_period_end >= :now))"
+
+
+def save_target(email, route, plan_name, plan, target_price, now):
+    """POST /subscribe: upsert the target and route details; the payment attributes are left
+    as they are (a new row has none, so it is unpaid). Returns the saved row."""
+    return table.update_item(
+        Key={"email": email, "route": route},
+        UpdateExpression=(
+            "SET plan_name = :plan, origin = :origin, destination = :dest, target_price = :target,"
+            " currency = :currency, created_at = if_not_exists(created_at, :now), updated_at = :now"
+        ),
+        ExpressionAttributeValues={
+            ":plan": plan_name,
+            ":origin": plan["origin"],
+            ":dest": plan["destination"],
+            ":target": target_price,
+            ":currency": "TWD",
+            ":now": now.strftime(TIME_FORMAT),
+        },
+        ReturnValues="ALL_NEW",
+    )["Attributes"]
 
 
 def update_paid_target(email, route, target_price, now):
@@ -192,7 +224,7 @@ def ecpay_config():
     """{merchant_id, hash_key, hash_iv, amount, cashier_url} from flight/ecpay (stripped)."""
     global _ecpay
     if _ecpay is None:
-        raw = json.loads(secrets.get_secret_value(SecretId="flight/ecpay")["SecretString"])
+        raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}ecpay")["SecretString"])
         cfg = {k: str(raw[k]).strip() for k in ("merchant_id", "hash_key", "hash_iv", "amount")}
         cfg["cashier_url"] = CASHIER_URLS[str(raw.get("env") or "stage").strip()]
         _ecpay = cfg

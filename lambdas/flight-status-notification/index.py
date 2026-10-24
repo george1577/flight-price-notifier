@@ -18,6 +18,7 @@ checkout charges.
 
 import html
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -32,8 +33,10 @@ DROP_STATUSES = {403, 422}
 # Deliberately duplicated from flight-fare-notification (tests/test_route_tables.py).
 CITY_NAMES = {"TPE": "台北", "TYO": "東京", "SEL": "首爾", "LON": "倫敦"}
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _resend = None  # cached per warm container; changing the secret needs a cold start
 _amount = None
 
@@ -153,7 +156,7 @@ def monthly_amount():
     """`amount` (TWD per month) from flight/ecpay, cached per warm container."""
     global _amount
     if _amount is None:
-        raw = json.loads(secrets.get_secret_value(SecretId="flight/ecpay")["SecretString"])
+        raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}ecpay")["SecretString"])
         _amount = str(raw["amount"]).strip()
     return _amount
 
@@ -161,7 +164,7 @@ def monthly_amount():
 def resend_config():
     global _resend
     if _resend is None:
-        raw = json.loads(secrets.get_secret_value(SecretId="flight/resend")["SecretString"])
+        raw = json.loads(secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}resend")["SecretString"])
         _resend = {"api_key": raw["api_key"], "from": raw.get("from") or DEFAULT_FROM}
     return _resend
 

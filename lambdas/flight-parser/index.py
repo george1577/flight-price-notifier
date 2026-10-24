@@ -28,9 +28,11 @@ API_URL = "https://api.travelpayouts.com/v1/prices/cheap"
 USER_AGENT = "Mozilla/5.0 (compatible; flight-notifier/1.0)"
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "flight-fare-queue")
 
+# Per-environment names (infra/flight-m1.yaml `Env`); the defaults are prod's.
+SECRETS_PREFIX = os.environ.get("SECRETS_PREFIX", "flight/")
 secrets = boto3.client("secretsmanager")
 sqs = boto3.client("sqs")
-table = boto3.resource("dynamodb").Table("subscriptions")
+table = boto3.resource("dynamodb").Table(os.environ.get("SUBSCRIPTIONS_TABLE", "subscriptions"))
 _queue_url = None
 
 
@@ -118,7 +120,7 @@ def next_month(today: date) -> str:
 
 
 def read_token() -> str:
-    raw = secrets.get_secret_value(SecretId="flight/travelpayouts")["SecretString"]
+    raw = secrets.get_secret_value(SecretId=f"{SECRETS_PREFIX}travelpayouts")["SecretString"]
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:

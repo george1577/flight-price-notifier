@@ -1,7 +1,7 @@
 // React Query hooks over the flight-api client. The per-user subscriptions list lives in the
 // cache under `subscriptionsKey(email)`. A save either hands the page to ECPay's cashier
-// (unpaid plan) or upserts the updated row into that list (paid plan), so any reader of it
-// shows the new target without a refetch.
+// (POST /checkout, unpaid plan) or upserts the updated row into that list (POST /subscribe,
+// paid plan), so any reader of it shows the new target without a refetch.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -9,7 +9,9 @@ import {
   isUnpaid,
   listSubscriptions,
   openCashier,
-  saveSubscription,
+  saveTarget,
+  startCheckout,
+  type CheckoutResult,
   type SubscribeInput,
   type Subscription,
 } from "@/lib/flight-api";
@@ -47,14 +49,22 @@ export function useSubscriptions(email: string, { awaitActivation = false } = {}
   });
 }
 
+export type SaveInput = Omit<SubscribeInput, "email"> & {
+  /** true: go (back) through ECPay's cashier (POST /checkout). false: a paid plan's new target. */
+  checkout: boolean;
+};
+
 /**
- * Save a target. An unpaid plan hands the whole page to ECPay's cashier; a paid plan's
- * in-place update is upserted into the cached list.
+ * Save a target. A checkout hands the whole page to ECPay's cashier; a paid plan's in-place
+ * update is upserted into the cached list.
  */
 export function useSaveSubscription(email: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: Omit<SubscribeInput, "email">) => saveSubscription({ ...input, email }),
+    mutationFn: async ({ checkout, ...input }: SaveInput): Promise<CheckoutResult> =>
+      checkout
+        ? startCheckout({ ...input, email })
+        : { kind: "saved", subscription: await saveTarget({ ...input, email }) },
     onSuccess: (result) => {
       if (result.kind === "checkout") {
         openCashier(result.html);
