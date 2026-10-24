@@ -1,15 +1,20 @@
 """flight-save-subscription: POST /subscribe {email, plan_name, target_price}.
 
-Upserts one `subscriptions` row per (email, route). M1 has no payment guard, so the
-row carries no subscription_status or any other payment field.
+Upserts one `subscriptions` row per (email, route), marks it `pending_payment` with a
+fresh MerchantTradeNo, and returns an auto-submit HTML form that sends the browser to
+ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only the ECPay callbacks
+may set `active`; this Lambda never does.
 """
 
 import base64
 import hashlib
+import html
 import json
+import os
 import re
 import urllib.parse
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 import boto3
@@ -21,7 +26,17 @@ PLANS = {
 }
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# ECPay cashier per flight/ecpay `env`. M2 runs on stage only; production is M3.
+CASHIER_URLS = {"stage": "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"}
+PERIOD_TYPE, FREQUENCY, EXEC_TIMES = "M", 1, 999  # monthly, effectively open-ended
+TAIWAN = timezone(timedelta(hours=8))
+# Plain text only: words like curl/python trip ECPay's WAF.
+ITEM_NAME = "機票降價通知 月費訂閱"
+TRADE_DESC = "Flight Price Notifier monthly plan"
+
+secrets = boto3.client("secretsmanager")
 table = boto3.resource("dynamodb").Table("subscriptions")
+_ecpay = None  # cached per warm container; changing the secret needs a cold start
 
 
 class BadRequest(Exception):
@@ -35,13 +50,18 @@ def handler(event, context):
         return respond(400, {"message": str(err)})
 
     plan = PLANS[plan_name]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Upsert on (email, route): overwrite the target, keep the first created_at.
-    saved = table.update_item(
-        Key={"email": email, "route": f"{plan['origin']}-{plan['destination']}"},
+    route = f"{plan['origin']}-{plan['destination']}"
+    now = datetime.now(timezone.utc)
+    trade_no = new_trade_no(now)
+    # Upsert on (email, route): overwrite the target, keep the first created_at, and start
+    # a fresh checkout attempt. Activation is the ReturnURL callback's job.
+    table.update_item(
+        Key={"email": email, "route": route},
         UpdateExpression=(
             "SET plan_name = :plan, origin = :origin, destination = :dest, target_price = :target,"
-            " currency = :currency, created_at = if_not_exists(created_at, :now), updated_at = :now"
+            " currency = :currency, created_at = if_not_exists(created_at, :now), updated_at = :now,"
+            " subscription_status = :pending, merchant_trade_no = :trade_no,"
+            " period_type = :period_type, frequency = :frequency"
         ),
         ExpressionAttributeValues={
             ":plan": plan_name,
@@ -49,12 +69,66 @@ def handler(event, context):
             ":dest": plan["destination"],
             ":target": target_price,
             ":currency": "TWD",
-            ":now": now,
+            ":now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ":pending": "pending_payment",
+            ":trade_no": trade_no,
+            ":period_type": PERIOD_TYPE,
+            ":frequency": FREQUENCY,
         },
-        ReturnValues="ALL_NEW",
-    )["Attributes"]
-    print(json.dumps({"saved": saved["route"], "target_price": str(target_price)}))
-    return respond(200, saved)
+    )
+    print(json.dumps({"checkout": route, "merchant_trade_no": trade_no, "target_price": str(target_price)}))
+    return respond_html(checkout_form(email, route, trade_no, now))
+
+
+def new_trade_no(now):
+    """Unique per attempt, alphanumeric, exactly 20 chars (ECPay's limit)."""
+    return f"FP{now:%y%m%d%H%M%S}{uuid.uuid4().hex[:6].upper()}"
+
+
+def checkout_form(email, route, trade_no, now):
+    cfg = ecpay_config()
+    api = os.environ["API_BASE_URL"].strip().rstrip("/")
+    params = {
+        "MerchantID": cfg["merchant_id"],
+        "MerchantTradeNo": trade_no,
+        "MerchantTradeDate": now.astimezone(TAIWAN).strftime("%Y/%m/%d %H:%M:%S"),
+        "PaymentType": "aio",
+        "ChoosePayment": "Credit",
+        "EncryptType": "1",
+        "TotalAmount": cfg["amount"],
+        "PeriodAmount": cfg["amount"],
+        "PeriodType": PERIOD_TYPE,
+        "Frequency": str(FREQUENCY),
+        "ExecTimes": str(EXEC_TIMES),
+        "ItemName": ITEM_NAME,
+        "TradeDesc": TRADE_DESC,
+        "ReturnURL": f"{api}/ecpay-return",
+        "PeriodReturnURL": f"{api}/ecpay-period",
+        "OrderResultURL": f"{api}/ecpay-result",
+        "CustomField1": email,
+        "CustomField2": route,
+    }
+    params["CheckMacValue"] = check_mac_value(params, cfg["hash_key"], cfg["hash_iv"])
+    inputs = "\n".join(
+        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">' for k, v in params.items()
+    )
+    return (
+        '<!doctype html>\n<html><head><meta charset="utf-8"><title>前往綠界付款</title></head><body>\n'
+        f'<form method="post" action="{html.escape(cfg["cashier_url"])}">\n{inputs}\n'
+        '<noscript><button type="submit">前往綠界付款</button></noscript>\n</form>\n'
+        "<script>document.forms[0].submit()</script>\n</body></html>"
+    )
+
+
+def ecpay_config():
+    """{merchant_id, hash_key, hash_iv, amount, cashier_url} from flight/ecpay (stripped)."""
+    global _ecpay
+    if _ecpay is None:
+        raw = json.loads(secrets.get_secret_value(SecretId="flight/ecpay")["SecretString"])
+        cfg = {k: str(raw[k]).strip() for k in ("merchant_id", "hash_key", "hash_iv", "amount")}
+        cfg["cashier_url"] = CASHIER_URLS[str(raw.get("env") or "stage").strip()]
+        _ecpay = cfg
+    return _ecpay
 
 
 def parse_request(event):
@@ -95,6 +169,10 @@ def _json_default(value):
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     raise TypeError(f"Not JSON serializable: {type(value).__name__}")
+
+
+def respond_html(page):
+    return {"statusCode": 200, "headers": {"content-type": "text/html; charset=utf-8"}, "body": page}
 
 
 def respond(status, payload):

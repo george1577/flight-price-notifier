@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_lambda
+from conftest import ecpay_cmv, load_lambda
 
 CMV_LAMBDAS = [
     "flight-save-subscription",
@@ -39,3 +39,8 @@ def test_cmv_helper_matches_ecpay_known_answers(aws, function_name, vector):
     module = load_lambda(function_name)
 
     assert module.check_mac_value(vector["params"], vector["hashKey"], vector["hashIV"]) == vector["expected"]
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=[v["name"] for v in VECTORS])
+def test_the_tests_own_signer_matches_ecpay_known_answers(vector):
+    assert ecpay_cmv(vector["params"], vector["hashKey"], vector["hashIV"]) == vector["expected"]
