@@ -10,6 +10,14 @@ Description: >-
 #   `flight-data` inline policy below; never drop or replace existing statements.
 # - Lambdas: python3.12, handler index.handler, Code: ../lambdas/<function-name>/
 
+Parameters:
+  SiteUrl:
+    Type: String
+    Description: >-
+      Public URL of the SPA (no trailing slash), e.g. https://<project>.vercel.app.
+      flight-ecpay-result redirects the browser to <SiteUrl>/app after ECPay's cashier.
+    AllowedPattern: ^https://\S+$
+
 Rules:
   OnlyUsEast1:
     Assertions:
@@ -114,6 +122,8 @@ Resources:
                 Resource: !GetAtt FlightFareQueue.Arn
 
   # ----------------------------------------------------------------- Lambdas
+  # M2 (#17): writes pending_payment + returns the ECPay checkout form. Reads flight/ecpay
+  # (covered by FlightSecrets); the callback URLs are built from API_BASE_URL.
   SaveSubscriptionFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -124,6 +134,9 @@ Resources:
       Timeout: 10
       MemorySize: 128
       Code: ../lambdas/flight-save-subscription/
+      Environment:
+        Variables:
+          API_BASE_URL: !Sub https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com
 
   ParserFunction:
     Type: AWS::Lambda::Function
@@ -300,6 +313,47 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/subscriptions
+
+  # ECPay's OrderResultURL (#17): the browser POSTs here after the cashier. A static SPA
+  # 405s on a POST, so this Lambda 302s to <SiteUrl>/app?purchase=success|failed.
+  # No state changes and no AWS calls: activation is the ReturnURL callback's job.
+  EcpayResultFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-ecpay-result
+      Description: ECPay OrderResultURL; 302s the browser back to the dashboard.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Code: ../lambdas/flight-ecpay-result/
+      Environment:
+        Variables:
+          SITE_URL: !Ref SiteUrl
+
+  EcpayResultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FlightApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt EcpayResultFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  EcpayResultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FlightApi
+      RouteKey: ANY /ecpay-result
+      Target: !Sub integrations/${EcpayResultIntegration}
+
+  EcpayResultApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EcpayResultFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-result
 
 Outputs:
   ApiBaseUrl:
