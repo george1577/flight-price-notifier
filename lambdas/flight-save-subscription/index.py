@@ -5,6 +5,9 @@ Anything else upserts one `subscriptions` row per (email, route), marks it
 `pending_payment` with a fresh MerchantTradeNo, and returns an auto-submit HTML form that
 sends the browser to ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only
 the ECPay callbacks may set `active`; this Lambda never sets it and never downgrades it.
+
+The billing period on the form and the row (PeriodType / Frequency / ExecTimes) comes from
+the PERIOD_TYPE / FREQUENCY / EXEC_TIMES environment variables (default M / 1 / 999).
 """
 
 import base64
@@ -29,7 +32,6 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # ECPay cashier per flight/ecpay `env`. M2 runs on stage only; production is M3.
 CASHIER_URLS = {"stage": "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"}
-PERIOD_TYPE, FREQUENCY, EXEC_TIMES = "M", 1, 999  # monthly, effectively open-ended
 TAIWAN = timezone(timedelta(hours=8))
 # Plain text only: words like curl/python trip ECPay's WAF.
 ITEM_NAME = "機票降價通知 月費訂閱"
@@ -88,10 +90,21 @@ def update_paid_target(email, route, target_price, now):
         return None
 
 
+def billing_period():
+    """(PeriodType, Frequency, ExecTimes) from the environment. The default is monthly and
+    effectively open-ended; the operator sets D/1/2 to test renewals, then switches back."""
+    return (
+        os.environ.get("PERIOD_TYPE", "M").strip() or "M",
+        int(os.environ.get("FREQUENCY", "1").strip() or 1),
+        int(os.environ.get("EXEC_TIMES", "999").strip() or 999),
+    )
+
+
 def start_checkout(email, route, plan_name, plan, target_price, now):
     """Upsert the row as `pending_payment` with a fresh trade number; returns that number.
     Raises ConditionalCheckFailedException if the row has become `active` (never downgrade)."""
     trade_no = new_trade_no(now)
+    period_type, frequency, exec_times = billing_period()
     # Upsert on (email, route): overwrite the target, keep the first created_at, and start
     # a fresh checkout attempt. Activation is the ReturnURL callback's job.
     table.update_item(
@@ -101,7 +114,7 @@ def start_checkout(email, route, plan_name, plan, target_price, now):
             "SET plan_name = :plan, origin = :origin, destination = :dest, target_price = :target,"
             " currency = :currency, created_at = if_not_exists(created_at, :now), updated_at = :now,"
             " subscription_status = :pending, merchant_trade_no = :trade_no,"
-            " period_type = :period_type, frequency = :frequency"
+            " period_type = :period_type, frequency = :frequency, exec_times = :exec_times"
         ),
         ExpressionAttributeValues={
             ":plan": plan_name,
@@ -112,8 +125,9 @@ def start_checkout(email, route, plan_name, plan, target_price, now):
             ":now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             ":pending": "pending_payment",
             ":trade_no": trade_no,
-            ":period_type": PERIOD_TYPE,
-            ":frequency": FREQUENCY,
+            ":period_type": period_type,
+            ":frequency": frequency,
+            ":exec_times": exec_times,
             ":active": "active",
         },
     )
@@ -129,6 +143,7 @@ def new_trade_no(now):
 def checkout_form(email, route, trade_no, now):
     cfg = ecpay_config()
     api = os.environ["API_BASE_URL"].strip().rstrip("/")
+    period_type, frequency, exec_times = billing_period()
     params = {
         "MerchantID": cfg["merchant_id"],
         "MerchantTradeNo": trade_no,
@@ -138,9 +153,9 @@ def checkout_form(email, route, trade_no, now):
         "EncryptType": "1",
         "TotalAmount": cfg["amount"],
         "PeriodAmount": cfg["amount"],
-        "PeriodType": PERIOD_TYPE,
-        "Frequency": str(FREQUENCY),
-        "ExecTimes": str(EXEC_TIMES),
+        "PeriodType": period_type,
+        "Frequency": str(frequency),
+        "ExecTimes": str(exec_times),
         "ItemName": ITEM_NAME,
         "TradeDesc": TRADE_DESC,
         "ReturnURL": f"{api}/ecpay-return",

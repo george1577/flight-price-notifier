@@ -137,6 +137,11 @@ Resources:
       Environment:
         Variables:
           API_BASE_URL: !Sub https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com
+          # ECPay billing period (#22). To test renewals set D / 1 / 2 (daily, two charges),
+          # pay once, check flight-ecpay-period the next day, then switch back to M / 1 / 999.
+          PERIOD_TYPE: "M"
+          FREQUENCY: "1"
+          EXEC_TIMES: "999"
 
   ParserFunction:
     Type: AWS::Lambda::Function

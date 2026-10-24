@@ -85,6 +85,13 @@ def test_save_subscription_gets_the_api_base_url_for_the_ecpay_callbacks(templat
     assert env["API_BASE_URL"] == {"Fn::Sub": "https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com"}
 
 
+def test_save_subscription_billing_period_is_configured_in_the_template(template):
+    env = function_named(template, "flight-save-subscription")["Properties"]["Environment"]["Variables"]
+
+    # Strings: Lambda env values are strings. Switch to D/1/2 to test renewals, then back.
+    assert (env["PERIOD_TYPE"], env["FREQUENCY"], env["EXEC_TIMES"]) == ("M", "1", "999")
+
+
 def test_ecpay_result_redirect_lambda_is_on_any_ecpay_result(template):
     fn_name = api_route_function(template, "ANY /ecpay-result")
     fn = template["Resources"][fn_name]["Properties"]
