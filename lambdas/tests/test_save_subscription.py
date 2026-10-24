@@ -163,6 +163,40 @@ def test_unpaid_rows_go_back_through_checkout(save, subscriptions_table, existin
     assert row["updated_at"] > "2026-01-01T00:00:00Z"
 
 
+ACTIVE = {
+    "subscription_status": "active", "merchant_trade_no": "FP2610241200001A2B3C",
+    "period_type": "M", "frequency": 1, "activated_at": "2026-01-01T00:00:30Z",
+    "last_charged_at": "2026-01-01T00:00:30Z", "total_success_times": 1,
+    "current_period_end": "2026-02-01T00:00:30Z", "current_period_end_date": "2026-02-01",
+}
+
+
+def test_an_active_subscriber_updates_the_target_in_place_without_paying_again(save, subscriptions_table):
+    seeded = {
+        "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo",
+        "origin": "TPE", "destination": "TYO", "target_price": 12000, "currency": "TWD",
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", **ACTIVE,
+    }
+    subscriptions_table.put_item(Item=seeded)
+
+    response = subscribe(save, {**AMY_TOKYO, "target_price": 9000})
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["content-type"] == "application/json"
+    row = get_row(subscriptions_table, "amy@example.com", "TPE-TYO")
+    assert row["target_price"] == 9000
+    assert row["updated_at"] > "2026-01-01T00:00:00Z"
+    # Everything else, the payment state above all, is untouched.
+    assert {k: v for k, v in row.items() if k not in ("target_price", "updated_at")} == {
+        k: v for k, v in seeded.items() if k not in ("target_price", "updated_at")
+    }
+    assert response_json(response) == {**response_json(response), **{
+        "email": "amy@example.com", "route": "TPE-TYO", "target_price": 9000,
+        "subscription_status": "active", "current_period_end_date": "2026-02-01",
+        "updated_at": row["updated_at"],
+    }}
+
+
 def test_saving_again_overwrites_the_target_instead_of_duplicating(save, subscriptions_table):
     checkout(save, {**AMY_TOKYO, "target_price": 12000})
     checkout(save, {**AMY_TOKYO, "target_price": 9000})

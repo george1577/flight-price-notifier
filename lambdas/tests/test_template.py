@@ -104,6 +104,23 @@ def test_ecpay_result_redirect_lambda_is_on_any_ecpay_result(template):
     ]
 
 
+def test_ecpay_return_callback_lambda_is_on_post_ecpay_return(template):
+    fn_name = api_route_function(template, "POST /ecpay-return")
+    fn = template["Resources"][fn_name]["Properties"]
+
+    assert fn["FunctionName"] == "flight-ecpay-return"
+    assert fn["Code"] == "../lambdas/flight-ecpay-return/"
+    assert fn["Role"] == {"Fn::GetAtt": "FlightLambdaRole.Arn"}
+
+    permissions = [
+        p["Properties"] for p in resources_of_type(template, "AWS::Lambda::Permission").values()
+        if p["Properties"]["FunctionName"] == {"Ref": fn_name}
+    ]
+    assert [p["SourceArn"] for p in permissions] == [
+        {"Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-return"}
+    ]
+
+
 def test_role_policy_keeps_every_m1_statement(template):
     sids = {s["Sid"] for s in flight_data_statements(template)}
 

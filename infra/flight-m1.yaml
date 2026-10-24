@@ -355,6 +355,44 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-result
 
+  # ECPay's ReturnURL (#18): the server-to-server callback for the first charge. Verifies
+  # the CheckMacValue and flips the row pending_payment -> active. Reads flight/ecpay
+  # (FlightSecrets) and does GetItem/UpdateItem on subscriptions (already granted).
+  EcpayReturnFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-ecpay-return
+      Description: ECPay ReturnURL; verifies the first charge and activates the subscription.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code: ../lambdas/flight-ecpay-return/
+
+  EcpayReturnIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FlightApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt EcpayReturnFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  EcpayReturnRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FlightApi
+      RouteKey: POST /ecpay-return
+      Target: !Sub integrations/${EcpayReturnIntegration}
+
+  EcpayReturnApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EcpayReturnFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-return
+
 Outputs:
   ApiBaseUrl:
     Description: Set the frontend's VITE_FLIGHT_API_URL to this value.
