@@ -30,6 +30,7 @@ PLANS = {
     "london": {"origin": "TPE", "destination": "LON"},
 }
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # fixed width: compared as strings against current_period_end
 
 # ECPay cashier per flight/ecpay `env`. M2 runs on stage only; production is M3.
 CASHIER_URLS = {"stage": "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"}
@@ -61,13 +62,14 @@ def handler(event, context):
     # A paid plan only changes its target. Anything else goes (back) through the cashier.
     saved = update_paid_target(email, route, target_price, now)
     if saved is None:
+        period = billing_period()  # read once: the row and the form must agree
         try:
-            trade_no = start_checkout(email, route, plan_name, plan, target_price, now)
+            trade_no = start_checkout(email, route, plan_name, plan, target_price, now, period)
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             # ReturnURL activated the row between the two writes: it is paid now.
             saved = update_paid_target(email, route, target_price, now)
         else:
-            return respond_html(checkout_form(email, route, trade_no, now))
+            return respond_html(checkout_form(email, route, trade_no, now, period))
     print(json.dumps({"target_updated": route, "target_price": str(target_price)}))
     return respond(200, saved)
 
@@ -88,7 +90,7 @@ def update_paid_target(email, route, target_price, now):
             ConditionExpression=PAID,
             ExpressionAttributeValues={
                 ":target": target_price,
-                ":now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ":now": now.strftime(TIME_FORMAT),
                 ":active": "active",
                 ":cancelled": "cancelled",
             },
@@ -108,11 +110,12 @@ def billing_period():
     )
 
 
-def start_checkout(email, route, plan_name, plan, target_price, now):
+def start_checkout(email, route, plan_name, plan, target_price, now, period):
     """Upsert the row as `pending_payment` with a fresh trade number; returns that number.
-    Raises ConditionalCheckFailedException if the row has become paid (never downgrade)."""
+    `period` is billing_period(). Raises ConditionalCheckFailedException if the row has
+    become paid (never downgrade)."""
     trade_no = new_trade_no(now)
-    period_type, frequency, exec_times = billing_period()
+    period_type, frequency, exec_times = period
     # Upsert on (email, route): overwrite the target, keep the first created_at, and start
     # a fresh checkout attempt. Activation is the ReturnURL callback's job.
     table.update_item(
@@ -130,7 +133,7 @@ def start_checkout(email, route, plan_name, plan, target_price, now):
             ":dest": plan["destination"],
             ":target": target_price,
             ":currency": "TWD",
-            ":now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ":now": now.strftime(TIME_FORMAT),
             ":pending": "pending_payment",
             ":trade_no": trade_no,
             ":period_type": period_type,
@@ -149,10 +152,10 @@ def new_trade_no(now):
     return f"FP{now:%y%m%d%H%M%S}{uuid.uuid4().hex[:6].upper()}"
 
 
-def checkout_form(email, route, trade_no, now):
+def checkout_form(email, route, trade_no, now, period):
     cfg = ecpay_config()
     api = os.environ["API_BASE_URL"].strip().rstrip("/")
-    period_type, frequency, exec_times = billing_period()
+    period_type, frequency, exec_times = period
     params = {
         "MerchantID": cfg["merchant_id"],
         "MerchantTradeNo": trade_no,
