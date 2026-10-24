@@ -9,13 +9,7 @@ Verify the whole free notifier end-to-end, then emit a single **READY for M2** v
 
 ## Execution mode
 
-Mainly **Cowork** — paste checks to the agent with the **AWS MCP Server** connector (it runs them as `call_boto3` API calls via `aws___run_script`); CLI runs the same `aws` lines. All commands `--region us-east-1`, `[default]` profile. MCP rules that bite here: **verify by effect** (can't `cat` an `invoke` output file); **`filter-log-events`**, not `logs tail`; **no JMESPath backtick literals** (use `SecretList[].Name`). Ask the student for: the API Gateway base URL, the live Vercel URL, and a real inbox = their **Resend-account email**.
-
-## Architecture
-
-![Flight Fare / Notification architecture (M1) — the Vercel Product Site POSTs to Subscriptions [DynamoDB]; EventBridge → Parser Wrapper → Parser (×N) reads Flight Routes [S3] + the travelpayouts API and scans Subscriptions, enqueuing matches to SQS; the Flight Fare Notification Lambda dedups against Notification History [DynamoDB] and emails via Resend. Legend: orange = manual input, teal = main component, pink = user data.](assets/flight-notification-architecture-m1.png)
-
-This checklist verifies every box in that diagram. The compact flow below maps each box to the verification sections (A–L):
+Mainly **Cowork** — paste checks to the agent with the **AWS API MCP**; CLI runs the same `aws` lines. All commands `--region us-east-1`, `[default]` profile. MCP rules that bite here: **verify by effect** (can't `cat` an `invoke` output file); **`filter-log-events`**, not `logs tail`; **no JMESPath backtick literals** (use `SecretList[].Name`). Ask the student for: the API Gateway base URL, the live Vercel URL, and a real inbox = their **Resend-account email**.
 
 ## Flow being verified
 
