@@ -66,8 +66,10 @@ def enqueue_welcome(row):
     """One `welcome` message on flight-status-queue (contract: spec #16). A failure is logged,
     not raised: the row is already active, so an ECPay retry could not re-send it anyway."""
     message = {"event_type": "welcome", "email": row["email"], "route": row["route"]}
-    if row.get("plan_name"):
-        message["plan_name"] = row["plan_name"]
+    # merchant_trade_no identifies this activation: flight-status-notification skips a redelivery of it.
+    for key in ("plan_name", "merchant_trade_no"):
+        if row.get(key):
+            message[key] = row[key]
     try:
         sqs.send_message(QueueUrl=status_queue_url(), MessageBody=json.dumps(message, ensure_ascii=False))
     except Exception as err:

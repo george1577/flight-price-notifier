@@ -115,7 +115,8 @@ def enqueue_cancel_email(row):
     """One `cancel` message on flight-status-queue (contract: spec #16). A failure is logged,
     not raised: the row is already cancelled, and a retried /cancel would not re-send it."""
     message = {"event_type": "cancel", "email": row["email"], "route": row["route"]}
-    for key in ("plan_name", "current_period_end_date"):
+    # cancelled_at identifies this cancel: flight-status-notification skips a redelivery of it.
+    for key in ("plan_name", "current_period_end_date", "cancelled_at"):
         if row.get(key):
             message[key] = row[key]
     try:

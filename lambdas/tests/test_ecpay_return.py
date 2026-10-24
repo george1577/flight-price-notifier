@@ -348,7 +348,8 @@ def test_an_activation_enqueues_exactly_one_welcome_message(ecpay_return, subscr
     assert_ok(post(ecpay_return, signed(callback_fields())))
 
     assert status_queue() == [
-        {"event_type": "welcome", "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo"}
+        {"event_type": "welcome", "email": "amy@example.com", "route": "TPE-TYO", "plan_name": "tokyo",
+         "merchant_trade_no": TRADE_NO}
     ]
 
 
