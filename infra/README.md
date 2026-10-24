@@ -266,6 +266,28 @@ aws dynamodb query --region us-east-1 --table-name notification_history \
 Expect one email (subject `✈️ 台北 → 東京 降價通知！NT$… 已達標`) and one history row.
 A 403/422 from Resend is logged and dropped (no row); a 429/5xx raises and SQS redelivers.
 
+### flight-status-notification (welcome / cancel email, M2)
+
+`flight-ecpay-return` puts one `{"event_type":"welcome","email","route","plan_name"}`
+message on `flight-status-queue` per successful activation. ECPay resends and
+`SimulatePaid=1` enqueue nothing. `flight-status-notification` (BatchSize 1) emails it
+with the same Resend rules as the fare alert. The NT$ monthly price comes from
+`flight/ecpay`'s `amount`, and both secrets are cached per warm container. `cancel`
+messages (route + `current_period_end_date`, shown as 有效至) use the same consumer.
+
+Smoke check without a card: send a synthetic welcome addressed to your Resend-account email.
+
+```bash
+SQURL=$(aws sqs get-queue-url --region us-east-1 --queue-name flight-status-queue --query QueueUrl --output text)
+aws sqs send-message --region us-east-1 --queue-url "$SQURL" \
+  --message-body '{"event_type":"welcome","email":"you@example.com","route":"TPE-TYO","plan_name":"tokyo"}'
+aws logs tail /aws/lambda/flight-status-notification --region us-east-1 --since 5m
+```
+
+Expect one email, `✈️ 歡迎訂閱 台北 → 東京 機票降價通知`. The full check is one real or
+self-signed `/ecpay-return` activation: it sends exactly one welcome, and re-POSTing
+the same callback sends none.
+
 ## Tests
 
 The Lambdas are tested locally with pytest + moto (no AWS account needed):

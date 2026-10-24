@@ -152,3 +152,63 @@ def test_role_policy_keeps_every_m1_statement(template):
         "FlightSecrets", "FlightTables", "FlightFareQueueSend", "FlightConfigObjects",
         "FlightParserInvoke", "FlightFareQueueConsume",
     } <= sids
+
+
+# ---------------------------------------------- status notifications (#20)
+
+
+def statement(template, sid):
+    (s,) = [s for s in flight_data_statements(template) if s.get("Sid") == sid]
+    return s
+
+
+def actions(s):
+    return sorted([s["Action"]] if isinstance(s["Action"], str) else s["Action"])
+
+
+def test_status_queue_visibility_timeout_is_about_six_times_the_consumer_timeout(template):
+    (queue_name,) = [
+        name for name, r in resources_of_type(template, "AWS::SQS::Queue").items()
+        if r["Properties"]["QueueName"] == "flight-status-queue"
+    ]
+    consumer = function_named(template, "flight-status-notification")["Properties"]
+
+    assert consumer["Code"] == "../lambdas/flight-status-notification/"
+    assert consumer["Role"] == {"Fn::GetAtt": "FlightLambdaRole.Arn"}
+    visibility = template["Resources"][queue_name]["Properties"]["VisibilityTimeout"]
+    assert 5 * consumer["Timeout"] <= visibility <= 7 * consumer["Timeout"]
+
+
+def test_status_queue_feeds_the_one_status_consumer_one_message_at_a_time(template):
+    mappings = [
+        m["Properties"] for m in resources_of_type(template, "AWS::Lambda::EventSourceMapping").values()
+        if m["Properties"]["EventSourceArn"] == {"Fn::GetAtt": "FlightStatusQueue.Arn"}
+    ]
+
+    assert len(mappings) == 1
+    (mapping,) = mappings
+    consumer = template["Resources"][mapping["FunctionName"]["Ref"]]["Properties"]
+    assert consumer["FunctionName"] == "flight-status-notification"
+    assert mapping["BatchSize"] == 1
+
+
+def test_status_queue_permissions_are_least_privilege_on_its_own_arn(template):
+    consume = statement(template, "FlightStatusQueueConsume")
+    send = statement(template, "FlightStatusQueueSend")
+
+    assert actions(consume) == ["sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
+    assert actions(send) == ["sqs:GetQueueUrl", "sqs:SendMessage"]
+    for s in (consume, send):
+        assert s["Effect"] == "Allow"
+        assert s["Resource"] == {"Fn::GetAtt": "FlightStatusQueue.Arn"}
+    # No other statement touches the status queue, and the fare-queue grants are unchanged.
+    others = [s for s in flight_data_statements(template) if s["Sid"] not in {consume["Sid"], send["Sid"]}]
+    assert all("FlightStatusQueue" not in str(s["Resource"]) for s in others)
+    assert statement(template, "FlightFareQueueSend")["Resource"] == {"Fn::GetAtt": "FlightFareQueue.Arn"}
+    assert statement(template, "FlightFareQueueConsume")["Resource"] == {"Fn::GetAtt": "FlightFareQueue.Arn"}
+
+
+def test_ecpay_return_is_told_the_status_queue_name(template):
+    env = function_named(template, "flight-ecpay-return")["Properties"]["Environment"]["Variables"]
+
+    assert env["STATUS_QUEUE_NAME"] == {"Fn::GetAtt": "FlightStatusQueue.QueueName"}
