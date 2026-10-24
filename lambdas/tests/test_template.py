@@ -128,6 +128,23 @@ def test_ecpay_return_callback_lambda_is_on_post_ecpay_return(template):
     ]
 
 
+def test_ecpay_period_callback_lambda_is_on_post_ecpay_period(template):
+    fn_name = api_route_function(template, "POST /ecpay-period")
+    fn = template["Resources"][fn_name]["Properties"]
+
+    assert fn["FunctionName"] == "flight-ecpay-period"
+    assert fn["Code"] == "../lambdas/flight-ecpay-period/"
+    assert fn["Role"] == {"Fn::GetAtt": "FlightLambdaRole.Arn"}
+
+    permissions = [
+        p["Properties"] for p in resources_of_type(template, "AWS::Lambda::Permission").values()
+        if p["Properties"]["FunctionName"] == {"Ref": fn_name}
+    ]
+    assert [p["SourceArn"] for p in permissions] == [
+        {"Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-period"}
+    ]
+
+
 def test_role_policy_keeps_every_m1_statement(template):
     sids = {s["Sid"] for s in flight_data_statements(template)}
 
