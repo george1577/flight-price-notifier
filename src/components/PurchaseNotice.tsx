@@ -1,35 +1,15 @@
-import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router";
+import { useState } from "react";
 import { CircleAlert, CircleCheck, X } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-
-type Outcome = "success" | "failed";
-
-function readOutcome(value: string | null): Outcome | null {
-  return value === "success" || value === "failed" ? value : null;
-}
+import type { PurchaseOutcome } from "@/hooks/use-purchase-outcome";
 
 /**
- * The notice shown after ECPay's cashier sends the browser back to /app?purchase=success|failed
- * (via the flight-ecpay-result redirect). The parameter is read once and then removed, so a
- * reload or a shared link doesn't show it again. Activation itself arrives separately, from
- * ECPay's server-to-server callback.
+ * The notice for a purchase outcome. Activation itself arrives separately, from ECPay's
+ * server-to-server callback, so the dashboard re-fetches the list meanwhile.
  */
-export function PurchaseNotice() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [outcome, setOutcome] = useState(() => readOutcome(searchParams.get("purchase")));
-
-  useEffect(() => {
-    if (!searchParams.has("purchase")) return;
-    setSearchParams(
-      (params) => {
-        params.delete("purchase");
-        return params;
-      },
-      { replace: true },
-    );
-  }, [searchParams, setSearchParams]);
+export function PurchaseNotice({ outcome: initial }: { outcome: PurchaseOutcome | null }) {
+  const [outcome, setOutcome] = useState(initial);
 
   if (outcome === null) return null;
 

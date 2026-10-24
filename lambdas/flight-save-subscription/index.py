@@ -1,9 +1,10 @@
 """flight-save-subscription: POST /subscribe {email, plan_name, target_price}.
 
-Upserts one `subscriptions` row per (email, route), marks it `pending_payment` with a
-fresh MerchantTradeNo, and returns an auto-submit HTML form that sends the browser to
-ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only the ECPay callbacks
-may set `active`; this Lambda never does.
+An `active` (paid) row just gets the new target, in place, and the row comes back as JSON.
+Anything else upserts one `subscriptions` row per (email, route), marks it
+`pending_payment` with a fresh MerchantTradeNo, and returns an auto-submit HTML form that
+sends the browser to ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only
+the ECPay callbacks may set `active`; this Lambda never sets it and never downgrades it.
 """
 
 import base64
@@ -53,11 +54,49 @@ def handler(event, context):
     plan = PLANS[plan_name]
     route = f"{plan['origin']}-{plan['destination']}"
     now = datetime.now(timezone.utc)
+
+    # A paid plan only changes its target. Anything else goes (back) through the cashier.
+    saved = update_paid_target(email, route, target_price, now)
+    if saved is None:
+        try:
+            trade_no = start_checkout(email, route, plan_name, plan, target_price, now)
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # ReturnURL activated the row between the two writes: it is paid now.
+            saved = update_paid_target(email, route, target_price, now)
+        else:
+            return respond_html(checkout_form(email, route, trade_no, now))
+    print(json.dumps({"target_updated": route, "target_price": str(target_price)}))
+    return respond(200, saved)
+
+
+def update_paid_target(email, route, target_price, now):
+    """Set the target on an `active` row and leave its payment state alone.
+    Returns the updated row, or None if the row isn't active (or doesn't exist)."""
+    try:
+        return table.update_item(
+            Key={"email": email, "route": route},
+            UpdateExpression="SET target_price = :target, updated_at = :now",
+            ConditionExpression="subscription_status = :active",
+            ExpressionAttributeValues={
+                ":target": target_price,
+                ":now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ":active": "active",
+            },
+            ReturnValues="ALL_NEW",
+        )["Attributes"]
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+
+
+def start_checkout(email, route, plan_name, plan, target_price, now):
+    """Upsert the row as `pending_payment` with a fresh trade number; returns that number.
+    Raises ConditionalCheckFailedException if the row has become `active` (never downgrade)."""
     trade_no = new_trade_no(now)
     # Upsert on (email, route): overwrite the target, keep the first created_at, and start
     # a fresh checkout attempt. Activation is the ReturnURL callback's job.
     table.update_item(
         Key={"email": email, "route": route},
+        ConditionExpression="attribute_not_exists(subscription_status) OR subscription_status <> :active",
         UpdateExpression=(
             "SET plan_name = :plan, origin = :origin, destination = :dest, target_price = :target,"
             " currency = :currency, created_at = if_not_exists(created_at, :now), updated_at = :now,"
@@ -75,10 +114,11 @@ def handler(event, context):
             ":trade_no": trade_no,
             ":period_type": PERIOD_TYPE,
             ":frequency": FREQUENCY,
+            ":active": "active",
         },
     )
     print(json.dumps({"checkout": route, "merchant_trade_no": trade_no, "target_price": str(target_price)}))
-    return respond_html(checkout_form(email, route, trade_no, now))
+    return trade_no
 
 
 def new_trade_no(now):

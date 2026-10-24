@@ -137,11 +137,39 @@ curl -si -X POST "$API/ecpay-result" -d 'RtnCode=1' | grep -i '^location'   # <S
 curl -si -X POST "$API/ecpay-result" -d 'RtnCode=0' | grep -i '^location'   # <SiteUrl>/app?purchase=failed
 ```
 
+A synthetic `ReturnURL` callback (the activation path, without paying). It signs an
+ECPay-shaped body, empty `CustomField3`/`CustomField4` included, with the public stage keys:
+
+```bash
+TRADE_NO=<the row's merchant_trade_no>
+BODY=$(python3 - "$TRADE_NO" <<'EOF'
+import hashlib, sys, urllib.parse
+f = {"MerchantID": "3002607", "MerchantTradeNo": sys.argv[1], "RtnCode": "1", "RtnMsg": "交易成功",
+     "SimulatePaid": "0", "CustomField1": "you@example.com", "CustomField2": "TPE-TYO",
+     "CustomField3": "", "CustomField4": ""}
+raw = "HashKey=pwFHCqoQZGmho4w6&" + "&".join(f"{k}={f[k]}" for k in sorted(f, key=str.lower)) + "&HashIV=EkRm7iFT261dpevs"
+enc = urllib.parse.quote_plus(raw).replace("~", "%7E").lower()
+for a, b in (("%2d", "-"), ("%5f", "_"), ("%2e", "."), ("%21", "!"), ("%2a", "*"), ("%28", "("), ("%29", ")")):
+    enc = enc.replace(a, b)
+f["CheckMacValue"] = hashlib.sha256(enc.encode()).hexdigest().upper()
+print(urllib.parse.urlencode(f))
+EOF
+)
+curl -s -X POST "$API/ecpay-return" -d "$BODY"; echo     # 1|OK
+curl -s -X POST "$API/ecpay-return" -d "${BODY}x"; echo  # 0|CheckMacValueInvalid
+```
+
+The row is now `subscription_status=active` with `activated_at`, `current_period_end`
+(one calendar month on) and `current_period_end_date`. Posting the same body again
+replies `1|OK` and changes nothing. `POST /subscribe` on the active row now answers JSON
+(target updated in place), not the cashier form.
+
 Stage payment (manual): open the dashboard, click 開始追蹤, pay with the test card
 `4311-9522-2222-2222`, `12/30`, CVV `222`, OTP `1234`. You should land on
-`/app?purchase=success` (no 405). In the stage back office
-(`vendor-stage.ecpay.com.tw`, 信用卡收單 → 定期定額查詢), filter by the row's
-`merchant_trade_no` to find the order.
+`/app?purchase=success` (no 405) and the card should turn 已訂閱 (有效) within a few
+seconds; the row is `active` with `merchant_trade_no` and `current_period_end` set. In the
+stage back office (`vendor-stage.ecpay.com.tw`, 信用卡收單 → 定期定額查詢), filter by the
+row's `merchant_trade_no` to find the order.
 
 ```bash
 curl -s "$API/subscriptions?email=you@example.com"
