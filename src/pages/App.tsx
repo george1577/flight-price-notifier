@@ -2,6 +2,7 @@ import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { CloudOff, LogOut } from "lucide-react";
 import { PlanCard } from "@/components/PlanCard";
+import { PurchaseNotice } from "@/components/PurchaseNotice";
 import { PLANS } from "@/lib/plans";
 import { supabase } from "@/integrations/supabase/client";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -42,6 +43,7 @@ export default function AppPage() {
         <p className="mt-3 text-muted-foreground">
           選一條航線、設定目標價，票價達標時我們會寄信通知你。
         </p>
+        <PurchaseNotice />
         {loadFailed && (
           <Alert className="mt-6 rounded-2xl border-2 border-dashed border-foreground bg-marigold/30 text-foreground">
             <CloudOff className="h-4 w-4" />

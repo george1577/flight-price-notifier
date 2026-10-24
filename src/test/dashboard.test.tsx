@@ -16,7 +16,7 @@ const user = { id: "u1", email: "amy@example.com" } as User;
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
-function renderDashboard() {
+function renderDashboard(entry = "/app") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -31,9 +31,10 @@ function renderDashboard() {
         children: [{ path: "/app", element: <AppPage /> }],
       },
     ],
-    { initialEntries: ["/app"] },
+    { initialEntries: [entry] },
   );
   render(<RouterProvider router={router} />);
+  return router;
 }
 
 function card(name: RegExp) {
@@ -47,7 +48,21 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
-function savedRow(plan_name: string, route: string, target_price: number) {
+const CHECKOUT_HTML =
+  '<!doctype html><html><body><form method="post" action="https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5">' +
+  '<input type="hidden" name="MerchantTradeNo" value="FP2610241200001A2B3C"></form>' +
+  "<script>document.forms[0].submit()</script></body></html>";
+
+/** POST /subscribe's answer for an unpaid plan: the ECPay auto-submit checkout page. */
+function checkoutResponse() {
+  return new Response(CHECKOUT_HTML, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+/** A saved row. Omit `status` for a legacy M1 row with no subscription_status. */
+function savedRow(plan_name: string, route: string, target_price: number, status?: string) {
   return {
     email: user.email,
     route,
@@ -58,8 +73,12 @@ function savedRow(plan_name: string, route: string, target_price: number) {
     currency: "TWD",
     created_at: "2026-10-23T00:00:00Z",
     updated_at: "2026-10-23T00:00:00Z",
+    ...(status ? { subscription_status: status, merchant_trade_no: "FP2610231200001A2B3C" } : {}),
   };
 }
+
+let documentWrites: string[];
+let documentCalls: string[];
 
 type Reply = Response | Error | (() => Response | Promise<Response>);
 
@@ -101,11 +120,27 @@ beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   mockApi({});
+  // The cashier handoff replaces the whole page; record it instead of letting jsdom do it.
+  documentWrites = [];
+  documentCalls = [];
+  // document.open is overloaded; spy on the no-argument form the handoff uses.
+  vi.spyOn(document as unknown as { open: () => Document }, "open").mockImplementation(() => {
+    documentCalls.push("open");
+    return document;
+  });
+  vi.spyOn(document, "write").mockImplementation((...html: string[]) => {
+    documentCalls.push("write");
+    documentWrites.push(html.join(""));
+  });
+  vi.spyOn(document, "close").mockImplementation(() => {
+    documentCalls.push("close");
+  });
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("Dashboard plan cards", () => {
@@ -118,7 +153,7 @@ describe("Dashboard plan cards", () => {
   });
 
   it("subscribes to a plan by POSTing the email, plan and target to the API", async () => {
-    mockApi({ subscribe: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 10000)) });
+    mockApi({ subscribe: checkoutResponse() });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
@@ -134,11 +169,23 @@ describe("Dashboard plan cards", () => {
       plan_name: "tokyo",
       target_price: 10000,
     });
-    expect(await within(tokyo).findByText(/已開始追蹤/)).toBeInTheDocument();
+  });
+
+  it("hands the page to ECPay's cashier when /subscribe answers with the checkout form", async () => {
+    mockApi({ subscribe: checkoutResponse() });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "10000" } });
+    fireEvent.click(within(tokyo).getByRole("button", { name: "開始追蹤" }));
+
+    await waitFor(() => expect(documentCalls).toEqual(["open", "write", "close"]));
+    expect(documentWrites).toEqual([CHECKOUT_HTML]);
+    expect(within(tokyo).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("sends the Seoul plan from the Seoul card", async () => {
-    mockApi({ subscribe: jsonResponse(200, savedRow("seoul", "TPE-SEL", 5500)) });
+    mockApi({ subscribe: checkoutResponse() });
     renderDashboard();
 
     const seoul = card(/台北 ✈ 首爾/);
@@ -195,8 +242,8 @@ describe("Dashboard plan cards", () => {
 });
 
 describe("Dashboard subscribed state", () => {
-  it("loads the signed-in user's subscriptions and marks the subscribed plans", async () => {
-    mockApi({ list: [savedRow("tokyo", "TPE-TYO", 10000)] });
+  it("loads the signed-in user's subscriptions and marks the paid plans", async () => {
+    mockApi({ list: [savedRow("tokyo", "TPE-TYO", 10000, "active")] });
     renderDashboard();
 
     const tokyo = card(/台北 ✈ 東京/);
@@ -210,26 +257,59 @@ describe("Dashboard subscribed state", () => {
     expect(within(seoul).getByRole("button", { name: "開始追蹤" })).toBeInTheDocument();
   });
 
-  it("flips a card to subscribed as soon as the POST succeeds, without refetching the list", async () => {
-    mockApi({ subscribe: jsonResponse(200, savedRow("seoul", "TPE-SEL", 5500)) });
+  it.each([
+    ["a pending_payment row", "pending_payment"],
+    ["a legacy row with no status", undefined],
+  ])("shows %s as 未完成付款 with a 完成付款 button", async (_label, status) => {
+    mockApi({ list: [savedRow("tokyo", "TPE-TYO", 10000, status)] });
     renderDashboard();
-    await waitFor(() => expect(listRequests()).toHaveLength(1));
 
-    const seoul = card(/台北 ✈ 首爾/);
-    fireEvent.change(within(seoul).getByLabelText(/目標價/), { target: { value: "5500" } });
-    fireEvent.click(within(seoul).getByRole("button", { name: "開始追蹤" }));
-
-    expect(await within(seoul).findByText("已訂閱")).toBeInTheDocument();
-    expect(within(seoul).getByText(/目前目標.*NT\$5,500/)).toBeInTheDocument();
-    expect(within(seoul).getByRole("button", { name: "更新目標價" })).toBeInTheDocument();
-    expect(within(card(/台北 ✈ 東京/)).queryByText("已訂閱")).not.toBeInTheDocument();
-    expect(listRequests()).toHaveLength(1);
+    const tokyo = card(/台北 ✈ 東京/);
+    expect(await within(tokyo).findByText("未完成付款")).toBeInTheDocument();
+    expect(within(tokyo).queryByText("已訂閱")).not.toBeInTheDocument();
+    expect(within(tokyo).getByText(/目前目標.*NT\$10,000/)).toBeInTheDocument();
+    expect(within(tokyo).getByRole("button", { name: "完成付款" })).toBeInTheDocument();
+    expect(within(tokyo).queryByRole("button", { name: "更新目標價" })).not.toBeInTheDocument();
   });
 
-  it("updating the target overwrites the old one on the card", async () => {
+  it("完成付款 restarts checkout for the saved target and hands off to the cashier", async () => {
     mockApi({
-      list: [savedRow("tokyo", "TPE-TYO", 10000)],
-      subscribe: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 8000)),
+      list: [savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")],
+      subscribe: checkoutResponse(),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    fireEvent.click(await within(tokyo).findByRole("button", { name: "完成付款" }));
+
+    await waitFor(() => expect(documentWrites).toEqual([CHECKOUT_HTML]));
+    expect(sentBody()).toEqual({
+      email: "amy@example.com",
+      plan_name: "tokyo",
+      target_price: 10000,
+    });
+  });
+
+  it("完成付款 uses a newly typed target when there is one", async () => {
+    mockApi({
+      list: [savedRow("tokyo", "TPE-TYO", 10000, "pending_payment")],
+      subscribe: checkoutResponse(),
+    });
+    renderDashboard();
+
+    const tokyo = card(/台北 ✈ 東京/);
+    await within(tokyo).findByText("未完成付款");
+    fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "8000" } });
+    fireEvent.click(within(tokyo).getByRole("button", { name: "完成付款" }));
+
+    await waitFor(() => expect(subscribeRequests()).toHaveLength(1));
+    expect(sentBody().target_price).toBe(8000);
+  });
+
+  it("a JSON answer updates the card in place, without refetching the list", async () => {
+    mockApi({
+      list: [savedRow("tokyo", "TPE-TYO", 10000, "active")],
+      subscribe: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 8000, "active")),
     });
     renderDashboard();
 
@@ -240,11 +320,14 @@ describe("Dashboard subscribed state", () => {
 
     expect(await within(tokyo).findByText(/目前目標.*NT\$8,000/)).toBeInTheDocument();
     expect(within(tokyo).queryByText(/目前目標.*NT\$10,000/)).not.toBeInTheDocument();
+    expect(within(tokyo).getByText("已訂閱")).toBeInTheDocument();
     expect(sentBody()).toEqual({
       email: "amy@example.com",
       plan_name: "tokyo",
       target_price: 8000,
     });
+    expect(documentCalls).toEqual([]);
+    expect(listRequests()).toHaveLength(1);
   });
 
   it.each([
@@ -253,7 +336,7 @@ describe("Dashboard subscribed state", () => {
   ])(
     "still renders every plan as unsubscribed, with a notice, when %s",
     async (_label, failure) => {
-      mockApi({ list: failure, subscribe: jsonResponse(200, savedRow("tokyo", "TPE-TYO", 9000)) });
+      mockApi({ list: failure, subscribe: checkoutResponse() });
       renderDashboard();
       await waitFor(() => expect(listRequests()).toHaveLength(1));
 
@@ -266,11 +349,45 @@ describe("Dashboard subscribed state", () => {
         expect(within(card(name)).getByRole("button", { name: "開始追蹤" })).toBeEnabled();
       }
 
-      // Subscribing still works and flips the card.
+      // Subscribing still works and goes to the cashier.
       const tokyo = card(/台北 ✈ 東京/);
       fireEvent.change(within(tokyo).getByLabelText(/目標價/), { target: { value: "9000" } });
       fireEvent.click(within(tokyo).getByRole("button", { name: "開始追蹤" }));
-      expect(await within(tokyo).findByText("已訂閱")).toBeInTheDocument();
+      await waitFor(() => expect(documentWrites).toEqual([CHECKOUT_HTML]));
     },
   );
+});
+
+describe("Dashboard purchase notice", () => {
+  it("shows 付款成功 after returning from the cashier, and drops the query parameter", async () => {
+    const router = renderDashboard("/app?purchase=success");
+
+    expect(await screen.findByText(/付款成功，訂閱將在幾秒內生效/)).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.search).toBe(""));
+    expect(router.state.location.pathname).toBe("/app");
+    // Still shown after the parameter is gone.
+    expect(screen.getByText(/付款成功，訂閱將在幾秒內生效/)).toBeInTheDocument();
+  });
+
+  it("shows a failure notice for ?purchase=failed", async () => {
+    const router = renderDashboard("/app?purchase=failed");
+
+    expect(await screen.findByText(/付款未完成/)).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.search).toBe(""));
+  });
+
+  it("can be dismissed", async () => {
+    renderDashboard("/app?purchase=success");
+
+    fireEvent.click(await screen.findByRole("button", { name: "關閉通知" }));
+
+    expect(screen.queryByText(/付款成功/)).not.toBeInTheDocument();
+  });
+
+  it("shows nothing without the parameter", async () => {
+    renderDashboard();
+    await waitFor(() => expect(listRequests()).toHaveLength(1));
+
+    expect(screen.queryByText(/付款成功|付款未完成/)).not.toBeInTheDocument();
+  });
 });
