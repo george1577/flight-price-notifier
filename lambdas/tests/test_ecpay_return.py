@@ -303,6 +303,17 @@ def test_paying_an_older_checkout_attempt_still_activates_with_that_trade_number
     assert row["merchant_trade_no"] == TRADE_NO
 
 
+def test_a_re_subscriber_starts_with_no_failed_charges(ecpay_return, subscriptions_table):
+    # An earlier series ended in declines; the new checkout must not inherit them, or the
+    # first decline on the new series would expire it at once.
+    pending_row(subscriptions_table, failed_charge_count=6)
+
+    assert_ok(post(ecpay_return, signed(callback_fields())))
+
+    row = get_row(subscriptions_table)
+    assert (row["subscription_status"], row["failed_charge_count"]) == ("active", 0)
+
+
 @pytest.mark.parametrize("status", ["cancelled", "expired"])
 def test_a_late_resend_does_not_revive_a_row_that_has_moved_on(ecpay_return, subscriptions_table, status):
     before = pending_row(
