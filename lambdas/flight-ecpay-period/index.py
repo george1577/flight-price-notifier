@@ -25,6 +25,8 @@ import boto3
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # fixed width: the parser compares these as strings
 MAX_FAILED_CHARGES = 6  # ECPay terminates the series on the 6th consecutive failed charge
+ACTIVE, CANCELLED, EXPIRED = "active", "cancelled", "expired"
+PAID_UP_VALUES = {":active": ACTIVE, ":cancelled": CANCELLED}  # for `subscription_status IN (:active, :cancelled)`
 
 secrets = boto3.client("secretsmanager")
 table = boto3.resource("dynamodb").Table("subscriptions")
@@ -103,8 +105,7 @@ def renew(row, fields):
                 ":period_end": period_end.strftime(TIME_FORMAT),
                 ":period_end_date": period_end.strftime("%Y-%m-%d"),
                 ":trade_no": trade_no,
-                ":active": "active",
-                ":cancelled": "cancelled",
+                **PAID_UP_VALUES,
                 **({":previous": previous} if previous else {}),
             },
             ReturnValues="ALL_NEW",
@@ -123,15 +124,28 @@ def renew(row, fields):
 def count_failure(row, fields):
     """A declined renewal. ECPay retries the card itself, so the subscriber keeps service; the
     row expires only once ECPay has ended the series (the 6th consecutive failure, or a payload
-    that says so). Returns the updated row, or None (logged) when the failure doesn't apply."""
+    that says so). Returns the updated row, or None (logged) when the failure doesn't apply.
+
+    A resent callback is counted once: the failure's identity (ProcessDate + TotalSuccessTimes)
+    is stored as last_failure_id, and the same identity is not counted again. ECPay's own retry
+    of the card on a later day has a new ProcessDate, so it counts. Without a ProcessDate
+    nothing identifies the charge, so the failure is always counted (a resend then counts twice)."""
     key = {"email": row["email"], "route": row["route"]}
     trade_no = fields.get("MerchantTradeNo", "")
+    failure_id = failure_identity(fields)
+    update = "ADD failed_charge_count :one"
+    condition = "merchant_trade_no = :trade_no AND subscription_status IN (:active, :cancelled)"
+    values = {":one": 1, ":trade_no": trade_no, **PAID_UP_VALUES}
+    if failure_id is not None:
+        update += " SET last_failure_id = :failure_id"
+        condition += " AND (attribute_not_exists(last_failure_id) OR last_failure_id <> :failure_id)"
+        values[":failure_id"] = failure_id
     try:
         updated = table.update_item(
             Key=key,
-            UpdateExpression="ADD failed_charge_count :one",
-            ConditionExpression="merchant_trade_no = :trade_no AND subscription_status IN (:active, :cancelled)",
-            ExpressionAttributeValues={":one": 1, ":trade_no": trade_no, ":active": "active", ":cancelled": "cancelled"},
+            UpdateExpression=update,
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
             ReturnValues="ALL_NEW",
         )["Attributes"]
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -149,9 +163,7 @@ def count_failure(row, fields):
             Key=key,
             UpdateExpression="SET subscription_status = :expired",
             ConditionExpression="merchant_trade_no = :trade_no AND subscription_status IN (:active, :cancelled)",
-            ExpressionAttributeValues={
-                ":expired": "expired", ":trade_no": trade_no, ":active": "active", ":cancelled": "cancelled",
-            },
+            ExpressionAttributeValues={":expired": EXPIRED, ":trade_no": trade_no, **PAID_UP_VALUES},
             ReturnValues="ALL_NEW",
         )["Attributes"]
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -159,6 +171,15 @@ def count_failure(row, fields):
     log(expired=trade_no, email=row["email"], route=row["route"], failed_charge_count=failures,
         reason="series ended" if ended else f"{failures} consecutive failed charges")
     return updated
+
+
+def failure_identity(fields):
+    """What tells one declined charge from another (see count_failure), or None when the
+    payload has no ProcessDate."""
+    process_date = fields.get("ProcessDate")
+    if not process_date:
+        return None
+    return f"{process_date}|{fields.get('TotalSuccessTimes', '')}"
 
 
 def series_ended(fields):
@@ -174,7 +195,7 @@ def explain_no_op(row, fields):
         log(warning="renewal for an order that is not the row's current one; check the ECPay back office "
                     "for a series that should have been cancelled",
             email=row["email"], route=row["route"], row_trade_no=row.get("merchant_trade_no"), paid_trade_no=trade_no)
-    elif status not in ("active", "cancelled"):
+    elif status not in (ACTIVE, CANCELLED):
         log(warning="renewal charged a subscription that is not paid up; check it in the ECPay back office",
             email=row["email"], route=row["route"], status=status, merchant_trade_no=trade_no)
     else:
