@@ -3,7 +3,9 @@
 ECPay calls this once the first charge of a 信用卡定期定額 order has gone through. A real,
 paid callback flips the (CustomField1, CustomField2) = (email, route) row from
 `pending_payment` to `active` and starts its first paid period. This Lambda (and, for
-renewals, flight-ecpay-period) is the only writer of `active`.
+renewals, flight-ecpay-period) is the only writer of `active`. Each activation enqueues
+exactly one `welcome` message on flight-status-queue (STATUS_QUEUE_NAME) for
+flight-status-notification; resends and SimulatePaid enqueue nothing.
 
 ECPay retries until it gets exactly `1|OK`, so every processed callback, no-ops included,
 gets that reply.
@@ -13,6 +15,7 @@ import base64
 import calendar
 import hashlib
 import json
+import os
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
@@ -21,8 +24,10 @@ import boto3
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # fixed width: the parser compares these as strings
 
 secrets = boto3.client("secretsmanager")
+sqs = boto3.client("sqs")
 table = boto3.resource("dynamodb").Table("subscriptions")
 _ecpay = None  # cached per warm container; changing the secret needs a cold start
+_status_queue_url = None
 
 
 def handler(event, context):
@@ -51,9 +56,31 @@ def handler(event, context):
     if activated is not None:
         log(activated=trade_no, email=activated["email"], route=activated["route"],
             current_period_end=activated["current_period_end"])
-        # #20 enqueues the welcome message here: only a successful conditional update gets
-        # this far, so a resend can never send a second one.
+        # Only a successful conditional update gets this far, so a resend can never
+        # enqueue a second welcome.
+        enqueue_welcome(activated)
     return reply(200, "1|OK")
+
+
+def enqueue_welcome(row):
+    """One `welcome` message on flight-status-queue (contract: spec #16). A failure is logged,
+    not raised: the row is already active, so an ECPay retry could not re-send it anyway."""
+    message = {"event_type": "welcome", "email": row["email"], "route": row["route"]}
+    if row.get("plan_name"):
+        message["plan_name"] = row["plan_name"]
+    try:
+        sqs.send_message(QueueUrl=status_queue_url(), MessageBody=json.dumps(message, ensure_ascii=False))
+    except Exception as err:
+        log(error="welcome email not enqueued; the subscription IS active", email=row["email"],
+            route=row["route"], detail=str(err))
+
+
+def status_queue_url():
+    global _status_queue_url
+    if _status_queue_url is None:
+        name = os.environ.get("STATUS_QUEUE_NAME", "flight-status-queue")
+        _status_queue_url = sqs.get_queue_url(QueueName=name)["QueueUrl"]
+    return _status_queue_url
 
 
 def activate(email, route, trade_no, fields):

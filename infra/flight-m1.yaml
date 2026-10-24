@@ -64,6 +64,15 @@ Resources:
       VisibilityTimeout: 180
       MessageRetentionPeriod: 345600 # 4 days
 
+  # M2 (#20): welcome / cancel status messages -> flight-status-notification (contract:
+  # spec #16). VisibilityTimeout ~6x StatusNotificationFunction's 30s timeout.
+  FlightStatusQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: flight-status-queue
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600 # 4 days
+
   # --------------------------------------------------------------------- IAM
   FlightLambdaRole:
     Type: AWS::IAM::Role
@@ -120,6 +129,22 @@ Resources:
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
                 Resource: !GetAtt FlightFareQueue.Arn
+              # M2 (#20): flight-ecpay-return (welcome) and, from #21, flight-cancel-subscription
+              # (cancel) enqueue status messages.
+              - Sid: FlightStatusQueueSend
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueUrl
+                Resource: !GetAtt FlightStatusQueue.Arn
+              # flight-status-notification's event-source mapping: all three, or it never polls.
+              - Sid: FlightStatusQueueConsume
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt FlightStatusQueue.Arn
 
   # ----------------------------------------------------------------- Lambdas
   # M2 (#17): writes pending_payment + returns the ECPay checkout form. Reads flight/ecpay
@@ -358,6 +383,7 @@ Resources:
   # ECPay's ReturnURL (#18): the server-to-server callback for the first charge. Verifies
   # the CheckMacValue and flips the row pending_payment -> active. Reads flight/ecpay
   # (FlightSecrets) and does GetItem/UpdateItem on subscriptions (already granted).
+  # Each activation enqueues one welcome message (#20, FlightStatusQueueSend).
   EcpayReturnFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -369,6 +395,9 @@ Resources:
       Timeout: 10
       MemorySize: 128
       Code: ../lambdas/flight-ecpay-return/
+      Environment:
+        Variables:
+          STATUS_QUEUE_NAME: !GetAtt FlightStatusQueue.QueueName
 
   EcpayReturnIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -392,6 +421,32 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-return
+
+  # ------------------------------------------- Status notifications (#20)
+  # The one consumer of flight-status-queue: event_type welcome | cancel -> one Resend
+  # email. Reads flight/resend and flight/ecpay (the monthly amount), both FlightSecrets.
+  # Timeout 30s; keep FlightStatusQueue.VisibilityTimeout ~6x.
+  StatusNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-status-notification
+      Description: flight-status-queue consumer; welcome / cancel emails via Resend.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code: ../lambdas/flight-status-notification/
+
+  # BatchSize 1: a raised 429/5xx redelivers only that message.
+  StatusNotificationQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref StatusNotificationFunction
+      EventSourceArn: !GetAtt FlightStatusQueue.Arn
+      BatchSize: 1
+      ScalingConfig:
+        MaximumConcurrency: 2 # stays under Resend's 5 req/s, shared with the fare alerts
 
 Outputs:
   ApiBaseUrl:
