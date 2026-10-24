@@ -10,9 +10,12 @@ Description: >-
 # accounts per environment would remove this (see infra/README.md "Environments").
 
 Parameters:
-  GitHubRepo:
+  GitHubRepoSubject:
     Type: String
-    Default: george1577/flight-price-notifier
+    # The repo uses GitHub's immutable OIDC subject: owner and repo carry their numeric ids,
+    # so a deleted-and-recreated repo with the same name can't assume this role. Read it with
+    # `gh api repos/<owner>/<repo>/actions/oidc/customization/sub` (sub_claim_prefix).
+    Default: george1577@32990210/flight-price-notifier@1430720429
 
 Rules:
   OnlyUsEast1:
@@ -42,8 +45,8 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
                 token.actions.githubusercontent.com:sub:
-                  - !Sub repo:${GitHubRepo}:ref:refs/heads/dev
-                  - !Sub repo:${GitHubRepo}:ref:refs/heads/main
+                  - !Sub repo:${GitHubRepoSubject}:ref:refs/heads/dev
+                  - !Sub repo:${GitHubRepoSubject}:ref:refs/heads/main
       Policies:
         - PolicyName: deploy-flight-stacks
           PolicyDocument:
