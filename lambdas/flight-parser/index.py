@@ -3,8 +3,10 @@
 1. Read the Travelpayouts token from `flight/travelpayouts`; target month = next month.
 2. Fetch the cheapest fare in TWD (the gate), then USD (best effort) from /v1/prices/cheap.
 3. Scan `subscriptions` for the route; enqueue a self-contained match message to
-   `flight-fare-queue` for every row with target_price >= cheapest TWD price.
-   M1 has no payment guard, so there is no status filter.
+   `flight-fare-queue` for every PAYING row with target_price >= cheapest TWD price.
+   Paywall (M2): `active`, or `cancelled` with current_period_end >= now. pending_payment,
+   expired and legacy no-status rows are skipped. A `cancelled` row past its period is
+   conditionally set to `expired` (only if still `cancelled`) and skipped.
 
 An empty / failed (e.g. 429) TWD response skips the route. A failed USD response only
 drops `cheapest_usd` from the message.
@@ -15,7 +17,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import boto3
@@ -46,7 +48,12 @@ def handler(event, context):
     usd = fetch_cheapest(origin, destination, month, token, "usd")  # may be None: never blocks
 
     matched = 0
+    now = utc_now()
     for sub in subscribers(route):
+        if not is_paying(sub, now):
+            if sub.get("subscription_status") == "cancelled":
+                retire(sub)  # the paid period after a cancel has passed
+            continue
         target = Decimal(str(sub["target_price"]))
         if target < Decimal(str(twd["price"])):
             continue
@@ -73,6 +80,36 @@ def handler(event, context):
         matched=matched,
     )
     return {"ok": True, "route": route, "matched": matched}
+
+
+def utc_now() -> str:
+    # Fixed-width so it compares correctly as a string against current_period_end.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def is_paying(sub, now: str) -> bool:
+    """Paywall: `active`, or `cancelled` but still inside the paid period."""
+    status = sub.get("subscription_status")
+    if status == "active":
+        return True
+    if status == "cancelled":
+        return sub.get("current_period_end", "") >= now
+    return False  # pending_payment, expired, or a legacy no-status row
+
+
+def retire(sub):
+    """cancelled -> expired, only if the row is still `cancelled` (a re-subscribe may have won the race)."""
+    try:
+        table.update_item(
+            Key={"email": sub["email"], "route": sub["route"]},
+            UpdateExpression="SET subscription_status = :expired",
+            ConditionExpression="subscription_status = :cancelled",
+            ExpressionAttributeValues={":expired": "expired", ":cancelled": "cancelled"},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        log(email=sub["email"], route=sub["route"], note="not retired: no longer cancelled")
+        return
+    log(email=sub["email"], route=sub["route"], note="cancelled period ended -> expired")
 
 
 def next_month(today: date) -> str:
