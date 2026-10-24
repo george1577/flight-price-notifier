@@ -1,6 +1,7 @@
 """flight-save-subscription: POST /subscribe {email, plan_name, target_price}.
 
-An `active` (paid) row just gets the new target, in place, and the row comes back as JSON.
+A paid row (`active`, or `cancelled` but still inside its paid period) just gets the new
+target, in place, and keeps its status; the row comes back as JSON.
 Anything else upserts one `subscriptions` row per (email, route), marks it
 `pending_payment` with a fresh MerchantTradeNo, and returns an auto-submit HTML form that
 sends the browser to ECPay's cashier for a 信用卡定期定額 (monthly recurring) order. Only
@@ -71,18 +72,25 @@ def handler(event, context):
     return respond(200, saved)
 
 
+# A row that has paid for the current moment: `active`, or `cancelled` with its paid period
+# still running (#21). current_period_end and :now share one fixed-width UTC format, so a
+# string comparison is a time comparison.
+PAID = "(subscription_status = :active OR (subscription_status = :cancelled AND current_period_end >= :now))"
+
+
 def update_paid_target(email, route, target_price, now):
-    """Set the target on an `active` row and leave its payment state alone.
-    Returns the updated row, or None if the row isn't active (or doesn't exist)."""
+    """Set the target on a paid row (see PAID) and leave its payment state alone.
+    Returns the updated row, or None if the row isn't paid (or doesn't exist)."""
     try:
         return table.update_item(
             Key={"email": email, "route": route},
             UpdateExpression="SET target_price = :target, updated_at = :now",
-            ConditionExpression="subscription_status = :active",
+            ConditionExpression=PAID,
             ExpressionAttributeValues={
                 ":target": target_price,
                 ":now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 ":active": "active",
+                ":cancelled": "cancelled",
             },
             ReturnValues="ALL_NEW",
         )["Attributes"]
@@ -102,14 +110,14 @@ def billing_period():
 
 def start_checkout(email, route, plan_name, plan, target_price, now):
     """Upsert the row as `pending_payment` with a fresh trade number; returns that number.
-    Raises ConditionalCheckFailedException if the row has become `active` (never downgrade)."""
+    Raises ConditionalCheckFailedException if the row has become paid (never downgrade)."""
     trade_no = new_trade_no(now)
     period_type, frequency, exec_times = billing_period()
     # Upsert on (email, route): overwrite the target, keep the first created_at, and start
     # a fresh checkout attempt. Activation is the ReturnURL callback's job.
     table.update_item(
         Key={"email": email, "route": route},
-        ConditionExpression="attribute_not_exists(subscription_status) OR subscription_status <> :active",
+        ConditionExpression=f"attribute_not_exists(subscription_status) OR NOT {PAID}",
         UpdateExpression=(
             "SET plan_name = :plan, origin = :origin, destination = :dest, target_price = :target,"
             " currency = :currency, created_at = if_not_exists(created_at, :now), updated_at = :now,"
@@ -129,6 +137,7 @@ def start_checkout(email, route, plan_name, plan, target_price, now):
             ":frequency": frequency,
             ":exec_times": exec_times,
             ":active": "active",
+            ":cancelled": "cancelled",
         },
     )
     print(json.dumps({"checkout": route, "merchant_trade_no": trade_no, "target_price": str(target_price)}))

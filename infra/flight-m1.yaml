@@ -344,6 +344,49 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/subscriptions
 
+  # POST /cancel {email, route} (#21): ECPay CreditCardPeriodAction Action=Cancel, then
+  # active -> cancelled (keeps current_period_end) and one cancel message on
+  # flight-status-queue. Reads flight/ecpay (FlightSecrets), GetItem/UpdateItem on
+  # subscriptions (FlightTables), FlightStatusQueueSend. CORS: POST is already allowed.
+  # Same known gap as /subscribe: the API trusts the client-sent email (no JWT check).
+  CancelSubscriptionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: flight-cancel-subscription
+      Description: Stops the ECPay recurring order and marks the subscription cancelled (grace period).
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FlightLambdaRole.Arn
+      Timeout: 20 # ECPay call has a 10s timeout
+      MemorySize: 128
+      Code: ../lambdas/flight-cancel-subscription/
+      Environment:
+        Variables:
+          STATUS_QUEUE_NAME: !GetAtt FlightStatusQueue.QueueName
+
+  CancelSubscriptionIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FlightApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CancelSubscriptionFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  CancelRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FlightApi
+      RouteKey: POST /cancel
+      Target: !Sub integrations/${CancelSubscriptionIntegration}
+
+  CancelSubscriptionApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CancelSubscriptionFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/cancel
+
   # ECPay's OrderResultURL (#17): the browser POSTs here after the cashier. A static SPA
   # 405s on a POST, so this Lambda 302s to <SiteUrl>/app?purchase=success|failed.
   # No state changes and no AWS calls: activation is the ReturnURL callback's job.

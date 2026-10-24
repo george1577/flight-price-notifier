@@ -42,6 +42,31 @@ export function isUnpaid(subscription: Subscription) {
 }
 
 /**
+ * What a plan card shows for a saved row (spec #16):
+ * - `unpaid`: never activated (or legacy); 完成付款.
+ * - `active`: paid and renewing; target form plus 取消訂閱.
+ * - `grace`: cancelled, but the paid period hasn't ended; alerts continue, target editable.
+ * - `ended`: expired, or cancelled past its paid period; 重新訂閱 goes back through checkout.
+ */
+export type PaymentState = "unpaid" | "active" | "grace" | "ended";
+
+export function paymentState(subscription: Subscription, now: Date = new Date()): PaymentState {
+  switch (subscription.subscription_status) {
+    case "active":
+      return "active";
+    case "cancelled": {
+      const end = Date.parse(subscription.current_period_end ?? "");
+      // The cancel Lambda always sets a period end; if one is somehow missing, show it as paid.
+      return Number.isNaN(end) || end >= now.getTime() ? "grace" : "ended";
+    }
+    case "expired":
+      return "ended";
+    default:
+      return "unpaid";
+  }
+}
+
+/**
  * POST /subscribe's answer: either ECPay's auto-submit checkout page (`text/html`), or the
  * row updated in place (`application/json`) for a plan that is already paid.
  */
@@ -118,6 +143,15 @@ export async function saveSubscription(input: SubscribeInput): Promise<Subscribe
     return { kind: "checkout", html: await response.text() };
   }
   return { kind: "saved", subscription: (await response.json()) as Subscription };
+}
+
+/**
+ * POST /cancel: stop the ECPay recurring order and mark the row `cancelled` (the paid
+ * period is kept). Returns the updated row; cancelling twice returns it unchanged.
+ * Same known gap as /subscribe: the API trusts the client-sent email.
+ */
+export function cancelSubscription(input: { email: string; route: Route }) {
+  return request<Subscription>("/cancel", { method: "POST", body: JSON.stringify(input) });
 }
 
 /**

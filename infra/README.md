@@ -197,6 +197,24 @@ curl -s "$API/subscriptions?email=you@example.com"
 Expect a JSON array with that row and `"target_price": 10000` (a number, not a string).
 Note: the API trusts the email the client sends (no JWT check); this gap is accepted for M1.
 
+Cancel (#21), on an `active` row:
+
+```bash
+curl -s -X POST "$API/cancel" -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","route":"TPE-TYO"}'
+aws logs tail /aws/lambda/flight-cancel-subscription --region us-east-1 --since 5m
+```
+
+Expect JSON with `subscription_status=cancelled`, `cancelled_at`, and the same
+`current_period_end` as before. The log line `ecpay_period_action` holds ECPay's reply:
+`RtnCode=1` for a real paid order, `90100150` (不存在的訂單編號) for a self-signed one; both
+cancel locally. A second POST returns the row unchanged and sends no second email; a
+`pending_payment`/`expired` row gets 409, no row 404, and an unreachable ECPay 502 (nothing
+changed). Until `current_period_end` the row still gets alerts and `/subscribe` updates its
+target in place; after it, the parser moves it to `expired` and `/subscribe` returns the
+cashier form again. For a real test-card order, the stage back office (定期定額查詢) should
+show it as terminated.
+
 ### flight-parser (one route)
 
 Give the test subscriber a target above the live fare, invoke the parser for its
