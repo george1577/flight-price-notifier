@@ -54,3 +54,60 @@ def test_stack_refuses_to_deploy_outside_us_east_1(template):
     assertions = [a for rule in template.get("Rules", {}).values() for a in rule["Assertions"]]
 
     assert {"Fn::Equals": [{"Ref": "AWS::Region"}, "us-east-1"]} in [a["Assert"] for a in assertions]
+
+
+def resources_of_type(template, type_):
+    return {name: r for name, r in template["Resources"].items() if r["Type"] == type_}
+
+
+def function_named(template, function_name):
+    (fn,) = [
+        r for r in resources_of_type(template, "AWS::Lambda::Function").values()
+        if r["Properties"]["FunctionName"] == function_name
+    ]
+    return fn
+
+
+def api_route_function(template, route_key):
+    """The Lambda resource name an HTTP API route proxies to."""
+    (route,) = [
+        r for r in resources_of_type(template, "AWS::ApiGatewayV2::Route").values()
+        if r["Properties"]["RouteKey"] == route_key
+    ]
+    integration_name = route["Properties"]["Target"]["Fn::Sub"].removeprefix("integrations/${").removesuffix("}")
+    integration = template["Resources"][integration_name]["Properties"]
+    return integration["IntegrationUri"]["Fn::GetAtt"].split(".")[0]  # !GetAtt Name.Arn
+
+
+def test_save_subscription_gets_the_api_base_url_for_the_ecpay_callbacks(template):
+    env = function_named(template, "flight-save-subscription")["Properties"]["Environment"]["Variables"]
+
+    assert env["API_BASE_URL"] == {"Fn::Sub": "https://${FlightApi}.execute-api.${AWS::Region}.amazonaws.com"}
+
+
+def test_ecpay_result_redirect_lambda_is_on_any_ecpay_result(template):
+    fn_name = api_route_function(template, "ANY /ecpay-result")
+    fn = template["Resources"][fn_name]["Properties"]
+
+    assert fn["FunctionName"] == "flight-ecpay-result"
+    assert fn["Code"] == "../lambdas/flight-ecpay-result/"
+    assert fn["Role"] == {"Fn::GetAtt": "FlightLambdaRole.Arn"}
+    assert fn["Environment"]["Variables"]["SITE_URL"] == {"Ref": "SiteUrl"}
+    assert "SiteUrl" in template["Parameters"]
+
+    permissions = [
+        p["Properties"] for p in resources_of_type(template, "AWS::Lambda::Permission").values()
+        if p["Properties"]["FunctionName"] == {"Ref": fn_name}
+    ]
+    assert [p["SourceArn"] for p in permissions] == [
+        {"Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FlightApi}/*/*/ecpay-result"}
+    ]
+
+
+def test_role_policy_keeps_every_m1_statement(template):
+    sids = {s["Sid"] for s in flight_data_statements(template)}
+
+    assert {
+        "FlightSecrets", "FlightTables", "FlightFareQueueSend", "FlightConfigObjects",
+        "FlightParserInvoke", "FlightFareQueueConsume",
+    } <= sids

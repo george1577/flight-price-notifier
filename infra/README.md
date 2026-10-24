@@ -25,8 +25,17 @@ aws cloudformation package --region us-east-1 \
 aws cloudformation deploy --region us-east-1 \
   --stack-name flight-m1 \
   --template-file /tmp/flight-m1.packaged.yaml \
-  --capabilities CAPABILITY_NAMED_IAM
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides SiteUrl=https://<your-site>.vercel.app
 ```
+
+`SiteUrl` is the public URL of the SPA (no trailing slash). `flight-ecpay-result`
+redirects the browser to `<SiteUrl>/app?purchase=...` after ECPay's cashier. It is
+required on the first deploy; later deploys keep the previous value unless you pass it again.
+
+**M2 release order:** create `flight/ecpay` (below), deploy the stack, then release the
+front end in the same release. From this deploy on, `POST /subscribe` answers with an
+HTML checkout page instead of JSON, and the old client breaks on it.
 
 Then read the API URL and give it to the frontend:
 
@@ -61,8 +70,21 @@ in your local `.env.local`, then redeploy the site. See `../.env.example`.
   three places a new route must be added). To change how often it runs, change `ScheduleExpression` on
   `FlightPriceCheckRule` and redeploy.
 
-- **Secrets.** `flight/*` secrets (`flight/travelpayouts`, `flight/resend`, ...) are
-  created in the prerequisites, not here. The role is only granted read access to them.
+- **Secrets.** `flight/*` secrets (`flight/travelpayouts`, `flight/resend`, `flight/ecpay`)
+  are created in the prerequisites, not here. The role is only granted read access to them.
+- **`flight/ecpay` (M2).** Create it before deploying M2, or `POST /subscribe` fails. M2
+  runs on ECPay's public stage test merchant:
+
+  ```bash
+  aws secretsmanager create-secret --region us-east-1 --name flight/ecpay \
+    --secret-string '{"merchant_id":"3002607","hash_key":"pwFHCqoQZGmho4w6","hash_iv":"EkRm7iFT261dpevs","env":"stage","amount":"300"}'
+  ```
+
+  `amount` is the monthly price in whole TWD; it becomes both `TotalAmount` and
+  `PeriodAmount` on the checkout form, so changing the price is a secret update, not a
+  code change. `env` picks the ECPay host; only `stage` (`payment-stage.ecpay.com.tw`)
+  exists until M3. `flight-save-subscription` caches the secret per warm container, so
+  after a `put-secret-value` force a cold start (any env-var change) before testing.
 - **Region.** The template's `Rules` block rejects any region other than `us-east-1`,
   so a deploy elsewhere fails at validation, before anything is created.
 - **Routes object access.** `flight-lambda-role` may only `s3:GetObject` the single key
@@ -85,6 +107,12 @@ The route list lives in four places that **must change together** when you add a
 
 `lambdas/tests/test_route_tables.py` fails if these four drift apart.
 
+The ECPay CheckMacValue helper (`check_mac_value`) is duplicated the same way into every
+Lambda that signs or verifies ECPay requests. When you copy it into a new Lambda, add the
+Lambda's directory to `CMV_LAMBDAS` in `lambdas/tests/test_checkmacvalue.py`, which runs
+every copy against ECPay's official known-answer vectors
+(`lambdas/tests/fixtures/checkmacvalue.json`).
+
 ## Smoke check after deploy
 
 ```bash
@@ -95,7 +123,25 @@ aws dynamodb get-item --region us-east-1 --table-name subscriptions \
   --key '{"email":{"S":"you@example.com"},"route":{"S":"TPE-TYO"}}'
 ```
 
-Expect `route=TPE-TYO`, `currency=TWD`, `target_price=10000`, no `subscription_status`.
+Expect the POST to print an HTML page whose `<form>` posts to
+`https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5` with a `CheckMacValue`
+hidden input, and the row to have `route=TPE-TYO`, `currency=TWD`, `target_price=10000`,
+`subscription_status=pending_payment` and a 20-character `merchant_trade_no` that
+matches the form's `MerchantTradeNo`. The row stays `pending_payment` until ECPay's
+`ReturnURL` callback activates it.
+
+The browser-return redirect:
+
+```bash
+curl -si -X POST "$API/ecpay-result" -d 'RtnCode=1' | grep -i '^location'   # <SiteUrl>/app?purchase=success
+curl -si -X POST "$API/ecpay-result" -d 'RtnCode=0' | grep -i '^location'   # <SiteUrl>/app?purchase=failed
+```
+
+Stage payment (manual): open the dashboard, click 開始追蹤, pay with the test card
+`4311-9522-2222-2222`, `12/30`, CVV `222`, OTP `1234`. You should land on
+`/app?purchase=success` (no 405). In the stage back office
+(`vendor-stage.ecpay.com.tw`, 信用卡收單 → 定期定額查詢), filter by the row's
+`merchant_trade_no` to find the order.
 
 ```bash
 curl -s "$API/subscriptions?email=you@example.com"

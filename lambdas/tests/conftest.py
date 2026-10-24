@@ -6,9 +6,12 @@ sets fake credentials + us-east-1. Handlers create boto3 clients at import time,
 load them *after* the `aws` fixture (and any table fixtures) are active.
 """
 
+import hashlib
 import importlib.util
 import json
 import sys
+import urllib.parse
+from html.parser import HTMLParser
 from pathlib import Path
 
 import boto3
@@ -78,6 +81,77 @@ def notification_history_table(aws):
         ],
         BillingMode="PAY_PER_REQUEST",
     )
+
+
+# ECPay's public stage test merchant (safe to commit), as stored in the flight/ecpay secret.
+ECPAY_STAGE = {
+    "merchant_id": "3002607",
+    "hash_key": "pwFHCqoQZGmho4w6",
+    "hash_iv": "EkRm7iFT261dpevs",
+    "env": "stage",
+    "amount": "300",
+}
+
+
+@pytest.fixture
+def ecpay_secret(aws):
+    """The flight/ecpay secret (created in the prerequisites, not by the stack)."""
+    client = boto3.client("secretsmanager", region_name=REGION)
+    client.create_secret(Name="flight/ecpay", SecretString=json.dumps(ECPAY_STAGE))
+    return client
+
+
+def ecpay_cmv(params: dict, hash_key=ECPAY_STAGE["hash_key"], hash_iv=ECPAY_STAGE["hash_iv"]) -> str:
+    """The tests' own CheckMacValue, written straight from ECPay's spec, so tests can sign
+    callbacks and check forms without trusting a Lambda's copy. Also checked against
+    ECPay's vectors in test_checkmacvalue.py."""
+    pairs = sorted(((k, v) for k, v in params.items() if k != "CheckMacValue"), key=lambda kv: kv[0].lower())
+    raw = "&".join([f"HashKey={hash_key}", *(f"{k}={v}" for k, v in pairs), f"HashIV={hash_iv}"])
+    encoded = urllib.parse.quote_plus(raw).replace("~", "%7e").lower()
+    for char in "-_.!*()":
+        encoded = encoded.replace(f"%{ord(char):02x}", char)
+    return hashlib.sha256(encoded.encode()).hexdigest().upper()
+
+
+class _FormParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.form = None
+        self.fields = {}
+        self.scripts = []
+        self._in_script = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form" and self.form is None:
+            self.form = attrs
+        elif tag == "input" and attrs.get("type") == "hidden":
+            self.fields[attrs["name"]] = attrs.get("value", "")
+        elif tag == "script":
+            self._in_script = True
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self._in_script = False
+
+    def handle_data(self, data):
+        if self._in_script:
+            self.scripts.append(data)
+
+
+def parse_checkout_form(html: str) -> dict:
+    """Read an auto-submit checkout page the way the browser would:
+    {"action", "method", "fields": {name: value}, "scripts": [...], "html"}."""
+    parser = _FormParser()
+    parser.feed(html)
+    form = parser.form or {}
+    return {
+        "action": form.get("action"),
+        "method": (form.get("method") or "").lower(),
+        "fields": parser.fields,
+        "scripts": parser.scripts,
+        "html": html,
+    }
 
 
 def api_event(method: str, path: str, body=None, query=None) -> dict:

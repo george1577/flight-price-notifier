@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSaveSubscription } from "@/hooks/use-subscriptions";
-import type { Subscription } from "@/lib/flight-api";
+import { isUnpaid, type Subscription } from "@/lib/flight-api";
 import { formatTwd, parseTargetPrice, type Plan } from "@/lib/plans";
 
 export function PlanCard({
@@ -15,7 +15,7 @@ export function PlanCard({
 }: {
   plan: Plan;
   email: string;
-  /** The saved row for this plan's route, if the user is subscribed. */
+  /** The saved row for this plan's route, if any (paid or not). */
   subscription?: Subscription | undefined;
 }) {
   const headingId = useId();
@@ -24,9 +24,13 @@ export function PlanCard({
   const [validationError, setValidationError] = useState<string | null>(null);
   const save = useSaveSubscription(email);
 
+  const unpaid = subscription !== undefined && isUnpaid(subscription);
+
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const target_price = parseTargetPrice(target);
+    // 完成付款 can re-run checkout for the saved target without retyping it.
+    const target_price =
+      unpaid && target.trim() === "" ? subscription.target_price : parseTargetPrice(target);
     if (target_price === null) {
       setValidationError("請輸入大於 0 的目標價（新台幣）。");
       return;
@@ -36,6 +40,7 @@ export function PlanCard({
   }
 
   const error = validationError ?? (save.isError ? `訂閱失敗：${save.error.message}` : null);
+  const updated = save.isSuccess && save.data.kind === "saved" ? save.data.subscription : null;
 
   return (
     <section aria-labelledby={headingId} className="specimen rounded-2xl p-6">
@@ -51,11 +56,16 @@ export function PlanCard({
             目前最低價約 {formatTwd(plan.hintPriceTwd)}
           </p>
         </div>
-        {subscription && (
-          <span className="rounded-full border-2 border-foreground bg-leaf px-2.5 py-0.5 text-xs font-bold">
-            已訂閱
-          </span>
-        )}
+        {subscription &&
+          (unpaid ? (
+            <span className="rounded-full border-2 border-foreground bg-marigold px-2.5 py-0.5 text-xs font-bold">
+              未完成付款
+            </span>
+          ) : (
+            <span className="rounded-full border-2 border-foreground bg-leaf px-2.5 py-0.5 text-xs font-bold">
+              已訂閱
+            </span>
+          ))}
       </div>
 
       {subscription && (
@@ -79,13 +89,13 @@ export function PlanCard({
             {error}
           </p>
         )}
-        {save.isSuccess && !error && (
+        {updated && !error && (
           <p className="text-sm text-muted-foreground">
-            已開始追蹤 — 目標 {formatTwd(save.data.target_price)}
+            已更新目標 — {formatTwd(updated.target_price)}
           </p>
         )}
         <Button type="submit" variant="hero" className="w-full" disabled={save.isPending}>
-          {subscription ? "更新目標價" : "開始追蹤"}
+          {!subscription ? "開始追蹤" : unpaid ? "完成付款" : "更新目標價"}
         </Button>
       </form>
     </section>

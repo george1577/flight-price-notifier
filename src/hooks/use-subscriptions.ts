@@ -1,11 +1,12 @@
 // React Query hooks over the flight-api client. The per-user subscriptions list lives in the
-// cache under `subscriptionsKey(email)`; a successful save upserts into that list so any
-// reader of it (e.g. a `useSubscriptions(email)` query backed by GET /subscriptions) flips
-// to the subscribed state without a refetch.
+// cache under `subscriptionsKey(email)`. A save either hands the page to ECPay's cashier
+// (unpaid plan) or upserts the updated row into that list (paid plan), so any reader of it
+// shows the new target without a refetch.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   listSubscriptions,
+  openCashier,
   saveSubscription,
   type SubscribeInput,
   type Subscription,
@@ -27,13 +28,21 @@ export function useSubscriptions(email: string) {
   });
 }
 
+/**
+ * Save a target. An unpaid plan hands the whole page to ECPay's cashier; a paid plan's
+ * in-place update is upserted into the cached list.
+ */
 export function useSaveSubscription(email: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: Omit<SubscribeInput, "email">) => saveSubscription({ ...input, email }),
-    onSuccess: (saved) => {
+    onSuccess: (result) => {
+      if (result.kind === "checkout") {
+        openCashier(result.html);
+        return;
+      }
       queryClient.setQueryData<Subscription[]>(subscriptionsKey(email), (list) =>
-        upsertSubscription(list, saved),
+        upsertSubscription(list, result.subscription),
       );
     },
   });
