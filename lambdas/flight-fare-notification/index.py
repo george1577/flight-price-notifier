@@ -52,7 +52,7 @@ def notify(msg):
     usd_price = usd.get("price")
     target_price = msg.get("target_price")
 
-    if not should_send(email, route, fare):
+    if not should_send(email, route, fare, msg.get("subscription_updated_at")):
         log(to=email, route=route, price=fare["price"], note="skipped (deduped)")
         return "skipped"
 
@@ -70,11 +70,12 @@ def notify(msg):
     return "sent"
 
 
-def should_send(email, route, fare):
+def should_send(email, route, fare, subscription_updated_at=None):
     """Dedup / re-alert gate, checked BEFORE calling Resend. TWD (`cheapest`) only.
 
-    Send if there is no prior alert for pk="{email}#{route}", or the last one is older
-    than NOTIFY_FLOOR_HOURS. Inside that window, send only on a big further drop:
+    Send if there is no prior alert for pk="{email}#{route}", the subscriber saved their
+    subscription after the last alert (a changed target re-arms it), or the last alert is
+    older than NOTIFY_FLOOR_HOURS. Inside that window, send only on a big further drop:
     new <= last * (1 - REALERT_PCT/100)  or  last - new >= REALERT_ABS_TWD.
     """
     items = history_table.query(
@@ -86,13 +87,19 @@ def should_send(email, route, fare):
         return True
     last = items[0]
     floor_hours = float(os.environ.get("NOTIFY_FLOOR_HOURS", "24"))
-    sent_at = datetime.fromisoformat(str(last["sent_at"]).replace("Z", "+00:00"))
+    sent_at = parse_utc(last["sent_at"])
+    if subscription_updated_at and parse_utc(subscription_updated_at) > sent_at:
+        return True
     if datetime.now(timezone.utc) - sent_at > timedelta(hours=floor_hours):
         return True
     pct = Decimal(os.environ.get("REALERT_PCT", "20"))
     abs_twd = Decimal(os.environ.get("REALERT_ABS_TWD", "2000"))
     last_price, new_price = Decimal(str(last["price"])), Decimal(str(fare["price"]))
     return new_price <= last_price * (1 - pct / 100) or (last_price - new_price) >= abs_twd
+
+
+def parse_utc(iso):
+    return datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
 
 
 # ---------------------------------------------------------------- renderer

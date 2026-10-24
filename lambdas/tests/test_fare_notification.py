@@ -26,10 +26,12 @@ TWD = {
 USD = {**TWD, "price": 298, "currency": "USD"}
 
 
-def match(email="me@example.com", usd=None, cheapest=TWD, route="TPE-TYO", plan="tokyo", target=12000):
+def match(email="me@example.com", usd=None, cheapest=TWD, route="TPE-TYO", plan="tokyo", target=12000, updated_at=None):
     body = {"email": email, "route": route, "plan_name": plan, "target_price": target, "cheapest": cheapest}
     if usd:
         body["cheapest_usd"] = usd
+    if updated_at:
+        body["subscription_updated_at"] = updated_at
     return body
 
 
@@ -228,6 +230,31 @@ def test_repeat_inside_window_is_skipped(monkeypatch, secrets, notification_hist
     assert result["results"] == ["skipped"]
     assert len(history(notification_history_table)) == 1
     assert "skipped (deduped)" in capsys.readouterr().out
+
+
+def iso_hours_ago(hours):
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_subscription_changed_after_last_alert_rearms_inside_window(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=9325, hours_ago=2)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(updated_at=iso_hours_ago(1))), None)
+
+    assert result["results"] == ["sent"]
+    assert len(resend.requests) == 1
+    assert len(history(notification_history_table)) == 2
+
+
+def test_subscription_unchanged_since_last_alert_stays_deduped(monkeypatch, secrets, notification_history_table):
+    seed_sent(notification_history_table, price=9325, hours_ago=1)
+    fn, resend = setup(monkeypatch)
+
+    result = fn.handler(sqs_event(match(updated_at=iso_hours_ago(2))), None)
+
+    assert result["results"] == ["skipped"]
+    assert resend.requests == []
 
 
 def test_same_price_after_window_sends_again_and_writes_history(monkeypatch, secrets, notification_history_table):
