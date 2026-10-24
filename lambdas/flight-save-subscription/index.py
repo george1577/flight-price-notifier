@@ -5,8 +5,10 @@ row carries no subscription_status or any other payment field.
 """
 
 import base64
+import hashlib
 import json
 import re
+import urllib.parse
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -101,3 +103,18 @@ def respond(status, payload):
         "headers": {"content-type": "application/json"},
         "body": json.dumps(payload, default=_json_default, ensure_ascii=False),
     }
+
+
+# ---- CheckMacValue: copied on purpose into every ECPay Lambda. Keep the copies identical;
+# tests/test_checkmacvalue.py runs each one against ECPay's known-answer vectors.
+_CMV_UNESCAPE = {"%2d": "-", "%5f": "_", "%2e": ".", "%21": "!", "%2a": "*", "%28": "(", "%29": ")"}
+
+
+def check_mac_value(params, hash_key, hash_iv):
+    """ECPay AIO CheckMacValue (SHA256) over every key except CheckMacValue, blank values included."""
+    pairs = sorted(((k, v) for k, v in params.items() if k != "CheckMacValue"), key=lambda kv: kv[0].lower())
+    raw = f"HashKey={hash_key}&" + "&".join(f"{k}={v}" for k, v in pairs) + f"&HashIV={hash_iv}"
+    encoded = urllib.parse.quote_plus(raw).replace("~", "%7E").lower()
+    for escaped, char in _CMV_UNESCAPE.items():
+        encoded = encoded.replace(escaped, char)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest().upper()
