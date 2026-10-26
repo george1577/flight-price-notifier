@@ -21,6 +21,10 @@ and each one is explained the first time it appears. A glossary is at the end.
 
 ## 1. The big picture in one paragraph
 
+![Architecture figure](images/architecture/00-full.png)
+
+*The whole architecture figure. Later sections reuse it and highlight the parts they discuss.*
+
 A user signs in on the website, picks a route (for example Taipei → Tokyo), types the most
 they're willing to pay, and pays NT$300 a month through ECPay. Every 30 minutes, a robot on
 AWS asks a flight-price service, "what's the cheapest fare to Tokyo next month?" If that fare
@@ -102,6 +106,10 @@ and sends no second email.
 
 ## 3. Zone 1: build, website, sign-in, payment (top-left)
 
+![Architecture figure, highlighting: build and site](images/architecture/01-build-and-site.png)
+
+*Highlighted: Cowork / Claude Code, the GitHub repo, the Product Site, Supabase and the site's `{domain}.com`.*
+
 ### 3.1 Cowork / Claude Code (orange) → Repo / GitHub (black)
 
 **What**: the development workflow. You (with Claude Code / Cowork as the AI coding
@@ -173,6 +181,10 @@ paying. Fixing this is a planned follow-up.
 
 ### 3.4 `{domain}.com` (red vertical label)
 
+![Architecture figure, highlighting: domain](images/architecture/02-domain.png)
+
+*Highlighted: the three `{domain}.com` labels, on the website and on both email senders. All three are M3 work.*
+
 **What**: your own domain name, for example `flightalert.com`, pointing at the website and
 used as the email sender address.
 
@@ -210,6 +222,10 @@ behaviour, and the new behaviour got a new route. This is the **expand → switc
 rule in `infra/README.md`: never change an existing endpoint's response shape.
 
 ### 3.6 ECPay (blue, top) and the ECPay Lambda Handlers (blue λ)
+
+![Architecture figure, highlighting: ecpay](images/architecture/03-ecpay.png)
+
+*Highlighted: ECPay, the ECPay Lambda Handlers (and their legend), the status queue they feed, and the Subscriptions table they update.*
 
 **What ECPay is**: a Taiwanese payment company. We use its **信用卡定期定額** (credit-card
 recurring payment) product. The user enters their card on ECPay's own page, called the
@@ -273,6 +289,10 @@ the same calculation, and if the two values differ, the message was forged or al
 
 ### 3.7 The inset diagram (bottom-right): subscribe → ECPay → callback → write
 
+![Architecture figure, highlighting: inset payment flow](images/architecture/04-inset-payment-flow.png)
+
+*Highlighted: the payment-flow inset.*
+
 The yellow inset compresses the payment flow. Here it is step by step:
 
 ```
@@ -305,6 +325,10 @@ redirect.
 
 ### 3.8 The subscription life cycle (state machine)
 
+![Architecture figure, highlighting: subscriptions](images/architecture/10-subscriptions.png)
+
+*Highlighted: the Subscriptions table, where `subscription_status` lives, and the two writers drawn in the figure.*
+
 A **state machine** is a fixed list of states plus the only allowed moves between them.
 Writing it down prevents impossible situations, such as "cancelled but never paid".
 
@@ -330,10 +354,18 @@ Who is allowed to make each move:
 
 ## 4. Zone 2: Flight Fare Checker (left light-blue box)
 
+![Architecture figure, highlighting: fare checker zone](images/architecture/05-fare-checker-zone.png)
+
+*Highlighted: the whole Flight Fare Checker zone.*
+
 This zone produces "fare match" messages. It flows left to right:
 EventBridge → Parser Wrapper → Parser (one per route) → SQS.
 
 ### 4.1 Event Bridge (grey)
+
+![Architecture figure, highlighting: eventbridge](images/architecture/06-eventbridge.png)
+
+*Highlighted: EventBridge and the Parser Wrapper it triggers every 30 minutes.*
 
 **What**: **Amazon EventBridge** is AWS's alarm clock. A rule (`flight-price-check`) with
 `rate(30 minutes)` triggers the Parser Wrapper every 30 minutes.
@@ -343,6 +375,10 @@ template change (`ScheduleExpression`), with no code change. On the **dev** stac
 is off, and you invoke the wrapper by hand, so testing doesn't burn API quota.
 
 ### 4.2 Flight Routes [S3] (orange, "manual input", with the admin icon)
+
+![Architecture figure, highlighting: routes s3](images/architecture/07-routes-s3.png)
+
+*Highlighted: the admin, the Flight Routes file in S3, and the Parser Wrapper that reads it.*
 
 **What**: a small JSON file, `flight-routes.json`, stored in an **S3 bucket**
 (`flight-config-<account>`). S3 is AWS's file storage. The file lists the routes to watch:
@@ -367,6 +403,10 @@ are duplicated.
 
 ### 4.3 Parser Wrapper (green λ, `flight-parser-wrapper`)
 
+![Architecture figure, highlighting: wrapper](images/architecture/08-wrapper.png)
+
+*Highlighted: the Parser Wrapper fanning out to one Parser per route from the routes file.*
+
 **What**: it reads `flight-routes.json` from S3 and starts one `flight-parser` run **per
 route**, asynchronously ("fire and forget"). It passes each one `from` and `to` (the
 figure's arrow labels "1. from, 2. to").
@@ -379,6 +419,10 @@ figure's arrow labels "1. from, 2. to").
 - **Reuse**: the parser can be called for a single route or a single subscriber (see 4.6).
 
 ### 4.4 Parser (stacked green λ, `flight-parser`) and the 3rd-party Parser API [travelpayouts]
+
+![Architecture figure, highlighting: parser](images/architecture/09-parser.png)
+
+*Highlighted: the Parser, its two inputs (Travelpayouts and Subscriptions), the message it builds, and the fare queue it writes to.*
 
 The stacked icon means "many copies running in parallel", one per route.
 
@@ -415,6 +459,10 @@ matched. (The booking "flight link" is built from these fields in the notifier.)
 requests that look like anonymous scripts. This was a real failure in this stack.
 
 ### 4.5 Subscriptions [DynamoDB] (pink) and the "subscription check" (blue tag)
+
+![Architecture figure, highlighting: subscriptions](images/architecture/10-subscriptions.png)
+
+*Highlighted: the Subscriptions table with its "subscription check" tag, and the Product Site and ECPay handlers that write to it.*
 
 **What DynamoDB is**: AWS's serverless **NoSQL** key-value database. You look rows up by
 key and pay per request (on-demand mode), so it's nearly free at this scale and needs no
@@ -463,6 +511,10 @@ the save still succeeds and the next scheduled check catches it.
 
 ### 5.1 The two SQS queues (grey columns)
 
+![Architecture figure, highlighting: sqs](images/architecture/11-sqs.png)
+
+*Highlighted: the two SQS queues. The upper one is `flight-status-queue`; the lower one is `flight-fare-queue`.*
+
 | Queue | Producer(s) | Consumer | Carries |
 |---|---|---|---|
 | `flight-fare-queue` (lower) | `flight-parser` | `flight-fare-notification` | "fare matched for this subscriber" |
@@ -483,6 +535,10 @@ Configuration details and why they matter:
   shows exactly that: the consumer receives messages *and* deletes them when done.
 
 ### 5.2 Flight Fare Notification (green λ, `flight-fare-notification`)
+
+![Architecture figure, highlighting: fare notification](images/architecture/12-fare-notification.png)
+
+*Highlighted: the fare queue, Flight Fare Notification, the Notification History it reads and writes, and the Resend email it sends.*
 
 For each fare-match message:
 
@@ -515,6 +571,10 @@ For each fare-match message:
 
 ### 5.3 Notification History [DynamoDB] (pink)
 
+![Architecture figure, highlighting: history](images/architecture/13-history.png)
+
+*Highlighted: the Notification History table.*
+
 **What**: one row per email actually sent.
 
 - **Partition key** `pk = "<email>#<route>"`, **sort key** `sent_at` (an ISO-8601 UTC
@@ -526,6 +586,10 @@ For each fare-match message:
 audit log of everything sent.
 
 ### 5.4 Subscription Status Notification (green λ, `flight-status-notification`)
+
+![Architecture figure, highlighting: status notification](images/architecture/14-status-notification.png)
+
+*Highlighted: the status queue, Subscription Status Notification, and the Resend email it sends.*
 
 **What**: one consumer for *all* payment-related emails. It picks the template from
 `event_type`:
@@ -549,6 +613,10 @@ Resend rules (retry 429/5xx, drop 403/422) as fare alerts.
 
 ### 5.5 Email [Resend] (yellow boxes)
 
+![Architecture figure, highlighting: email](images/architecture/15-email.png)
+
+*Highlighted: the two Resend email columns.*
+
 **What**: **Resend** is an email-sending service. Our Lambdas send each email with one HTTPS
 POST to `api.resend.com`, using the plain Python standard library and no SDK.
 
@@ -564,6 +632,10 @@ the Resend account owner's inbox (403 for anyone else). M3's `{domain}.com` fixe
 ---
 
 ## 6. The legend, decoded
+
+![Architecture figure, highlighting: legend](images/architecture/16-legend.png)
+
+*Highlighted: the colour legend, the "Shared Structure" box, and the ECPay handlers legend.*
 
 | Legend item | Meaning |
 |---|---|
@@ -633,6 +705,10 @@ the Resend account owner's inbox (403 for anyone else). M3's `{domain}.com` fixe
 ---
 
 ## 9. Where the figure is simplified or differs from the code
+
+![Architecture figure](images/architecture/00-full.png)
+
+*The figure again, for comparing against the table below.*
 
 | Figure shows | Reality in the code |
 |---|---|
