@@ -29,21 +29,9 @@ Build the complete **free** notifier in one pass: **subscribe → fetch on a sch
 
 ## Execution mode: Cowork (default) vs CLI
 
-This course runs mainly in **Cowork** — you talk to a Cowork agent with the **AWS MCP Server** connector and paste the **`ask """ … """`** blocks below to it verbatim. On the local Claude CLI instead, run the equivalent `aws`/`zip` commands directly. Every AWS command uses `--region us-east-1`; the `[default]` profile means **no `--profile` flag**.
+This course runs mainly in **Cowork** — you talk to a Cowork agent with the **AWS API MCP** and paste the **`ask """ … """`** blocks below to it verbatim. On the local Claude CLI instead, run the equivalent `aws`/`zip` commands directly. Every AWS command uses `--region us-east-1`; the `[default]` profile means **no `--profile` flag**.
 
-> **Read [[aws-best-practice]] *Cowork execution constraints* once before you deploy.** The connector is **not a shell** — the AWS MCP Server runs Python + `call_boto3` remotely (`aws___run_script`); no `zip`, no access to local files. Two deploy methods follow from that: **Method 1 — inline CFN `Code.ZipFile`** for a single file ≤4096 chars (Part 1.1's Lambdas); **Method 2 — the `flight-seed` base64→S3 bridge** for anything bigger (Part 1.2's parser, Part 1.3's notification Lambda). Quirks (verified on the old CLI-only connector; on the AWS MCP Server use the API equivalents — `FilterLogEvents`, poll `DescribeStacks`, Python filtering — per [[aws-best-practice]] *The AWS MCP Server*): `logs tail` and `cloudformation wait` are **rejected** (use `filter-log-events` / poll `describe-stacks`); `lambda invoke --payload` is **raw, not base64**; you **can't `cat` an invoke's output file** (verify by effect); **JMESPath backtick literals** fail (use `SecretList[].Name`, not `SecretList[?starts_with(Name,\`flight/\`)]`).
-
-## Architecture
-
-![Flight Fare / Notification architecture (M1) — Cowork pushes to the GitHub repo, which deploys the Vercel Product Site (Supabase auth). The Flight Fare Checker group: EventBridge → Parser Wrapper → Parser (×N) reads Flight Routes [S3] + the 3rd-party travelpayouts API and scans Subscriptions [DynamoDB] for subscriber + target price; matches go to SQS. The Notification group: Flight Fare Notification Lambda dedups against Notification History [DynamoDB] and sends via Email [Resend]. Legend: orange = manual input, teal = main component, pink = user data.](assets/flight-notification-architecture-m1.png)
-
-How the diagram maps to M1 (the boxes you build, by part):
-- **Part 1.1 (Subscribe):** `Subscriptions [DynamoDB]` (pink = user data), fed via the `Product Site [Vercel]` `POST /subscribe`. The repo loop on the left — `Cowork (claude code) → Repo (GitHub) → Product Site (Vercel)` — is the M0 carryover that ships UI changes.
-- **Part 1.2 (Fetch on schedule):** `Event Bridge → Parser Wrapper → Parser (×N)`, reading the admin-managed `Flight Routes [S3]` (orange = manual input) and the `3rd-party Parser API [travelpayouts]`, scanning `Subscriptions` for `subscriber` + `target price`, and enqueuing matches (`from / to / subscriber / target price / flight link`) to **SQS**.
-- **Part 1.3 (Email on target):** `Flight Fare Notification` Lambda pulls from SQS, dedups against `Notification History [DynamoDB]` (pink = user data), and sends `Email [Resend]`.
-- **Shared Structure** (legend, bottom-left): the `Library Layer` + `Lambda` pattern every λ box reuses.
-
-The same system as a text fallback:
+> **Read [[aws-best-practice]] *Cowork execution constraints* once before you deploy.** The connector is usually **`aws`-only** (no shell, no `zip`, no file authoring). Two deploy methods follow from that: **Method 1 — inline CFN `Code.ZipFile`** for a single file ≤4096 chars (Part 1.1's Lambdas); **Method 2 — the `flight-seed` base64→S3 bridge** for anything bigger (Part 1.2's parser, Part 1.3's notification Lambda). MCP quirks you'll hit: `logs tail` and `cloudformation wait` are **rejected** (use `filter-log-events` / poll `describe-stacks`); `lambda invoke --payload` is **raw, not base64**; you **can't `cat` an invoke's output file** (verify by effect); **JMESPath backtick literals** fail (use `SecretList[].Name`, not `SecretList[?starts_with(Name,\`flight/\`)]`).
 
 ## Full system (what you're building)
 
@@ -305,7 +293,7 @@ ask """
 Land three objects in S3 via flight-seed, us-east-1 (replace <ACCOUNT_ID>). RAW JSON payload — only the `b64` field is base64:
 >
 1. routes config — `b64` = base64 of `[{"plan":"tokyo","origin":"TPE","destination":"TYO"},{"plan":"seoul","origin":"TPE","destination":"SEL"}]`:
-   `aws lambda invoke --function-name flight-seed --payload '{"bucket":"flight-config-<ACCOUNT_ID>","key":"flight-routes.json","b64":"<BASE64>","ct":"application/json"}' out.json --region us-east-1`
+   `aws lambda invoke --function-name flight-seed --payload '{"bucket":"flight-config-<ACCOUNT_ID>","key":"flight-routes.json","b64":"<BASE64>","ct":"application/json"}' /tmp/aws-api-mcp/workdir/out.json --region us-east-1`
 >
 2. parser zip — `zip -j parser.zip index.py && base64 -w0 parser.zip` → `key":"lambda/parser.zip"`, `ct":"application/zip"`.
 >

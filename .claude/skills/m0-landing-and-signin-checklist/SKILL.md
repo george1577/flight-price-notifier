@@ -53,12 +53,12 @@ Ask the student for:
   curl -sS -o /dev/null -w "%{http_code}\n" https://<app>.vercel.app
   ```
 - **B2** It's auto-deploying from GitHub (push → redeploy). Confirm in Vercel dashboard the project's Git connection points at the repo from A1.
-  *Recovery:* re-import the repo on vercel.com/new (M0 Step 8).
+  *Recovery:* re-import the repo on vercel.com/new (M0 Step 3).
 - **B3** **Deep link works (the SSR-vs-SPA trap):** `/app` does NOT 404:
   ```bash
   curl -sS -o /dev/null -w "%{http_code}\n" https://<app>.vercel.app/app
   ```
-  Expect `200` (or a redirect to sign-in if unauthenticated — both are fine; a **404** means the app shipped as SSR without a SPA fallback). *Recovery:* M0 Step 7 — convert to a plain Vite SPA, re-deploy.
+  Expect `200` (or a redirect to sign-in if unauthenticated — both are fine; a **404** means the app shipped as SSR without a SPA fallback). *Recovery:* M0 Step 2.A — convert to a plain Vite SPA, re-deploy.
 
 #### Section C — Landing page contents
 - **C1** Hero + feature cards + Sign In/Up button present:
@@ -76,7 +76,7 @@ Ask the student for:
   supabase projects list
   ```
 - **D3** Sign-in AND sign-out both work on the live site (close the loop).
-  *Recovery:* redo M0 Step 9 (swap auth to the student's Supabase) — common miss is leaving Lovable's default backend in place.
+  *Recovery:* redo M0 Step 4 (swap auth to the student's Supabase) — common miss is leaving Lovable's default backend in place.
 
 ## Reporting
 

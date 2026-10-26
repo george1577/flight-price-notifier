@@ -1,87 +1,60 @@
 ---
 name: m1-flight-price-checker-prerequisites
-description: One-time setup before Milestone 1 of the Flight Price Notifier course — an INTERACTIVE, agent-driven walkthrough. MOST of the foundation was already done in M0 (AWS access wired, GitHub PAT cached in `flight/github`, Supabase url/publishable-key cached in `flight/supabase`) — so this skill VERIFIES those from Secrets Manager and only ASKS the student if something is actually missing. The genuinely-new M1 keys are Travelpayouts (the parser reads it) and Resend (the notifier reads it); the agent collects, caches, and verifies those — Resend via a throwaway Lambda. Use when the student starts M1 for the first time, or when `m1-flight-price-checker` / `-checklist` detects the project, AWS access, the Travelpayouts token, or Resend is missing.
+description: One-time setup before Milestone 1 of the Flight Price Notifier course — an INTERACTIVE, agent-driven walkthrough. The Cowork agent drives the student step by step: AWS access FIRST (the one step done outside Cowork, in a Claude Code CLI), then it collects each key value from the student in chat (GitHub PAT, Supabase url/publishable-key, Travelpayouts token, Resend key) and does the rest itself — caching every key in Secrets Manager, proving the push→Vercel loop by recalling the GitHub token from the secret, and verifying Resend via a throwaway Lambda. Use when the student starts M1 for the first time, or when `m1-flight-price-checker` / `-checklist` detects the project, AWS access, the Travelpayouts token, or Resend is missing.
 ---
 
 # M1 Prerequisites — interactive setup (the agent drives)
 
-**You are the Cowork agent running this skill. Drive the student through it one part at a time** — don't dump the whole thing. For each part: tell them what's about to happen, **check Secrets Manager first**, ask for a value **only if it's actually missing**, then run the AWS/git work yourself, confirm it worked, and move on.
-
-> **Most of the foundation already exists from M0.** In M0 the student wired **AWS access**, cached the **GitHub PAT**, and cached the **Supabase** url + publishable key. So **don't re-ask for those by default** — discover them in Secrets Manager and reuse them. The only **genuinely new** M1 keys are **Travelpayouts** and **Resend**. Net effect: for a student who finished M0 cleanly, the *only* things you actually collect here are those two keys.
-
-> ⚠️ **Don't assume the secret *name*.** M0 is run by an AI in a separate session, and **the name it chose is not guaranteed** — it might be `flight/github`, `flight-price-notifier/github`, `github-pat`, etc. So **never** rely on a hard-coded `describe-secret --secret-id flight/github`: an exact-name miss does **not** mean the secret is absent — it usually means it's stored under a different name. **Discover by listing + scanning** (below), and only treat a credential as missing after the scan finds nothing.
-
-## Architecture (what these credentials unlock)
-
-![Flight Fare / Notification architecture (M1) — Cowork pushes to the GitHub repo, which deploys the Vercel Product Site (Supabase auth). The Flight Fare Checker group: EventBridge → Parser Wrapper → Parser (×N) reads Flight Routes [S3] + the 3rd-party travelpayouts API and scans Subscriptions [DynamoDB]; matches go to SQS. The Notification group: Flight Fare Notification Lambda dedups against Notification History [DynamoDB] and sends via Email [Resend]. Legend: orange = manual input, teal = main component, pink = user data.](assets/flight-notification-architecture-m1.png)
-
-The four credentials you confirm/collect here are what make this diagram run:
-- **GitHub PAT** (M0 carryover) → the `Cowork → Repo (GitHub) → Product Site (Vercel)` push loop on the left.
-- **Supabase** url + publishable key (M0 carryover) → the `Database [Supabase]` auth behind the Product Site.
-- **Travelpayouts** token (new) → the `3rd-party Parser API [travelpayouts]` the `Parser` Lambdas call.
-- **Resend** key (new) → the `Email [Resend]` box the `Flight Fare Notification` Lambda sends through.
+**You are the Cowork agent running this skill. Drive the student through it one part at a time** — don't dump the whole thing. For each part: tell them what's about to happen, ask for exactly the value(s) you need, **wait for their reply**, then run the AWS/git work yourself, confirm it worked, and move on. The student should only ever have to (a) do the AWS-console + CLI step once, and (b) paste you a key value when you ask. Everything else is yours.
 
 ## How to run this (read first)
 
-- **Discover-then-reuse, ask only if genuinely absent.** For each M0 carryover, run **`list-secrets`** and scan the names for an obvious candidate (e.g. anything containing `github` / `supabase`); confirm by reading it and checking the **shape** (a `pat` field for GitHub, a `url`+`publishable_key`/`anon_key` for Supabase). If found → "✅ already cached from M0 — reusing" and move on. **Only if the scan turns up nothing** do you ask the student to paste it. (This is [[aws-best-practice]] Rule 2's check-then-collect, but name-agnostic — biased toward *reuse* because M0 already did the work.)
-- **One canonical scan, reused throughout.** List once at the top and keep the result; don't re-list per credential:
-  ```bash
-  aws secretsmanager list-secrets --region us-east-1 --query "SecretList[].Name"   # the full inventory to scan against
-  ```
-  Match case-insensitively on substrings, not exact names. If two candidates match (e.g. a stray duplicate), read both and prefer the one whose shape is right; mention the ambiguity to the student rather than guessing silently.
-- **Tolerate the *shape*, not just the name.** A past M0 run may have stored a credential as **bare-string** rather than JSON (real example: `github/personal-access-token` holds the raw `github_pat_…`, not `{"pat":…}`), or used a different field name (`anon_key` vs `publishable_key`). So **don't hard-fail on a `json.load`** — if it doesn't parse as JSON, treat the raw value as the credential; and match key fields by their value pattern, not an exact field name. Identify the secret by *what the value looks like*, not its envelope.
 - **One part at a time, conversationally.** End each part by confirming success and announcing the next part. Never ask for two different keys in the same message.
-- **You run all the AWS/git commands** via the AWS MCP Server connector + git tool. The student never runs `aws` themselves.
+- **You run all the AWS/git commands** via the AWS API MCP + git tool. The student never runs `aws` themselves (except the one CLI credential-write in Part A, which you hand them).
 - **Every AWS command:** `--region us-east-1`, `[default]` profile (no `--profile`).
-- **Read [[aws-best-practice]] *Cowork execution constraints* once** before you deploy anything. Two facts shape this skill: (1) the AWS connector is **not a shell** (the AWS MCP Server runs Python + `call_boto3` remotely; no `zip`, no local files) → Lambda code deploys via **inline CFN** (small) or the **`flight-seed` S3 bridge** (big); (2) the **sandbox can't reach arbitrary hosts** (`api.resend.com` is proxy-blocked) → anything that POSTs to a third party runs **from a Lambda**, not the sandbox. This is why Resend is verified from a Lambda (Part D).
+- **Check-then-collect:** before creating any secret, `describe-secret` first; if it already exists, tell the student "already cached — skipping" and move on (a returning student usually has them all).
+- **The order is fixed: AWS first.** Secrets Manager is an AWS service — you can't cache anything until the `[default]` profile exists.
+- **Read [[aws-best-practice]] *Cowork execution constraints* once** before you deploy anything. Two facts shape this skill: (1) the common AWS connector is **`aws`-only** (no shell/`zip`/file authoring) → Lambda code deploys via **inline CFN** (small) or the **`flight-seed` S3 bridge** (big); (2) the **sandbox can't reach arbitrary hosts** (`api.resend.com` is proxy-blocked) → anything that POSTs to a third party runs **from a Lambda**, not the sandbox. This is why Resend is verified from a Lambda (Part D).
 
-**The four secrets M1 relies on — two are M0 carryovers, two are new here.** The "looks like" column is what you scan `list-secrets` for; the M0 ones may sit under *any* name the M0 run chose, so match by substring + shape, not exact name:
+**The four secrets you'll end up with** (tell the student this up front so they know what's coming):
 
-| Credential | Looks like (name substring / JSON shape) | Where it comes from | Note |
-|---|---|---|---|
-| GitHub PAT | name `*github*`; shape `{pat:"github_pat_…"}` or bare string | **M0 (Step 6)** — discover, don't re-ask | write-credential — real secret |
-| Supabase url + publishable key | name `*supabase*`; shape `{url, publishable_key}` (or `{url, anon_key}`) | **M0 (Step 9)** — discover, don't re-ask | publishable key is **public** — convenience cache (never the service-role key) |
-| Travelpayouts token | you create it (suggested `flight/travelpayouts`, shape `{token}`) | **NEW in M1** — collect here | real secret (the parser Lambda reads it) |
-| Resend API key | you create it (suggested `flight/resend`, shape `{api_key, from}`) | **NEW in M1** — collect here | real secret (the notification Lambda reads it) |
-
-> For the two **new** secrets you create here, use the suggested `flight/*` names for consistency with the rest of the course ([[aws-best-practice]] Rule 2) — but the M1 build skill should **also** look those up by substring/shape, for the same reason: a later session can't assume the name either. The point isn't the prefix; it's that **discovery, not a hard-coded name, is how every session finds an existing secret.**
+| Credential | Cached as | Note |
+|---|---|---|
+| GitHub PAT | `flight/github` `{pat}` | write-credential — real secret |
+| Supabase url + publishable key | `flight/supabase` `{url, publishable_key}` | publishable key is **public** — convenience cache (never the service-role key) |
+| Travelpayouts token | `flight/travelpayouts` `{token}` | real secret (the parser Lambda reads it) |
+| Resend API key | `flight/resend` `{api_key, from}` | real secret (the notification Lambda reads it) |
 
 **Opening line to the student (say something like):**
-> "Good news — M0 already wired your AWS and cached your GitHub + Supabase keys, so I'll just confirm those are still in Secrets Manager. Then M1 only needs **two new keys**: Travelpayouts and Resend. I'll ask for those one at a time and store + test them. Let me check what's already there first."
+> "I'll set up everything M1 needs. First I'll grab your three M0 project links, then we do the **one step outside Cowork** — wiring your AWS credentials. After that, just paste me four keys one at a time and I'll store and test them all. Ready? First, your project links."
 
 ---
 
-## Part 0 — Project links (mostly recoverable — only the Vercel URL is new)
+## Part 0 — Collect the M0 project links
 
-You need a few of the student's M0 links, but **don't blanket-ask for all three** — recover what you can first:
-- **Supabase URL** → already in the Supabase secret you'll discover in Part B3 (read its `url`). No need to ask.
-- **GitHub repo URL** → if you're connected to GitHub, list the student's repos and find `flight-price-notifier` (or whatever they named it); only ask if you can't identify it.
-- **Vercel deploy URL** → **not** stored anywhere, so this is the one you genuinely need from them.
+Before anything else, get the **three URLs from the student's finished M0** — you'll reuse them throughout (the GitHub URL for the clone + push test, the Vercel URL to confirm the deploy, the Supabase URL to point them at their keys). Ask for all three in one message and wait:
 
-So the only thing to actually ask for up front:
+> "Paste me your three M0 links:
+> - **GitHub repo:** (e.g. `https://github.com/uopsdod/fly-low-alert/`)
+> - **Vercel deploy URL:** (e.g. `https://fly-low-alert.vercel.app/`)
+> - **Supabase project URL:** (e.g. `https://supabase.com/dashboard/project/pmvtdxbelbgglpalxype/`)"
 
-> "One link, please — your **Vercel deploy URL** (e.g. `https://fly-low-alert.vercel.app/`). I'll pull your GitHub repo and Supabase project from what's already cached."
+When they reply, **echo the three back** so they can confirm you've got them right, and **remember them for the rest of this skill:**
+- **GitHub repo URL** → you'll `git clone` it (Part B1) and push to it (Part B4).
+- **Vercel deploy URL** → you'll open it to confirm the "V3" title shows after the push (Part B4).
+- **Supabase project URL** → that dashboard's **Project Settings → API** page is where the student copies the **Project URL** + **publishable key** you'll ask for in Part B5.
 
-Echo it back to confirm. If you couldn't auto-identify the GitHub repo, ask for that too — otherwise leave it. (A wrong Vercel URL makes the optional Part B2 push-check fail confusingly, so double-check that one.)
+> If any link is missing or looks wrong (e.g. a Supabase *table-editor* URL instead of the project URL, or a GitHub URL that 404s), ask them to re-check before continuing — a wrong repo/Vercel URL makes the Part B push test fail confusingly.
 
 ---
 
-## Part A — AWS access (already wired in M0 — just confirm)
-
-**AWS was set up in M0 (Step 5)** so the GitHub token could be cached. So **don't walk the student through IAM again by default — just confirm it still works:**
-```bash
-aws sts get-caller-identity --query Account --output text --region us-east-1
-```
-- Returns an account ID → "✅ AWS is still wired from M0." Skip straight to Part B.
-- Errors (`[default]` profile missing/expired) → *then* fall back to the one-time setup below.
-
-<details><summary><strong>Fallback — first-time AWS setup (only if the check above failed)</strong></summary>
+## Part A — AWS access (the ONE step outside Cowork)
 
 This is the only part the student does outside Cowork — because writing `~/.aws/credentials` needs a local Claude Code CLI session (the Cowork connector then reads those creds). **Walk them through it, then wait for them to confirm AWS is live before continuing.**
 
 **Tell the student, step by step (pause between):**
 
-1. Install the **AWS MCP Server** connector in Cowork: *Customize → Connectors → search "AWS MCP"*. If it isn't listed, add it as a custom MCP server with the `mcp-proxy-for-aws` config in [[aws-best-practice]] *The AWS MCP Server*. Don't install the deprecated **"AWS API MCP"** connector — remove it if present (two AWS servers cause tool conflicts).
+1. **Install the AWS API MCP connector** in Cowork: *Customize → Connectors → search "AWS API MCP" → Install.*
 2. **In the AWS Console, as the root user** of their course account:
    - **IAM → Users → Create user** (suggest `admin-for-cowork`) → attach **`AdministratorAccess`** → create.
    - That user → **Security credentials → Create access key → "Command Line Interface (CLI)"** → copy the **Access key ID + Secret** (shown once).
@@ -100,61 +73,47 @@ aws sts get-caller-identity --query Account --output text --region us-east-1
 
 > ⚠️ Remind them: **root is used only once** (to make the admin user); never use root keys after. Revoke the access key at course end.
 
-</details>
-
 ---
 
-## Part B — GitHub + Supabase (M0 carryovers — discover, don't re-ask)
+## Part B — Repo + GitHub (you cache it, then prove the push loop)
 
-Both were **cached in M0**, but **under whatever name that run chose** — so **discover them by scanning `list-secrets`, never by a hard-coded `--secret-id`**. Run the canonical list once (from "How to run this") and scan it; only ask the student if the scan finds nothing.
+Now that AWS is up, cache GitHub **first** — because you'll prove the push loop by recalling the token *from the secret*, the same way every later milestone pushes.
 
-**B1 — Discover the GitHub secret** (scan, don't assume the name *or* the shape):
-1. From the `list-secrets` inventory, pick the name that looks like the GitHub token — anything containing **`github`** (real examples seen in the wild: `flight/github`, `github/personal-access-token`, `github-pat`).
-2. Read it and pull out the token — **accept either shape**, because M0 runs vary:
-   ```bash
-   aws secretsmanager get-secret-value --secret-id "<the name you found>" --region us-east-1 --query SecretString --output text
-   ```
-   - It may be **JSON** (`{"pat":"github_pat_…"}`) → use the `pat` field.
-   - It may be a **bare token string** (`github_pat_…` with no JSON wrapper — this is common; e.g. `github/personal-access-token` stores it raw) → use the whole string as the token. Don't `json.load`-and-fail; if parsing as JSON throws, treat the raw value as the PAT.
-   - Either way, sanity-check it **starts with `github_pat_`** (fine-grained) or `ghp_` (classic).
-   - Found a usable token → "✅ GitHub token already cached from M0 (`<name>`) — reusing it." **Remember that exact name** for B2 and for the build skill. Move to B3.
-   - **No `github`-ish secret anywhere in the list** (rare — M0 skipped/partial) → **then** ask for the PAT:
-     > "I don't see a GitHub token cached yet. Paste me your **GitHub fine-grained PAT** — github.com/settings/personal-access-tokens → *Generate new token (fine-grained)* → *Only select repositories* → this one repo → *Repository permissions → Contents → Read and write* → copy the `github_pat_…`."
+**B1 — Clone the repo** (using the **GitHub repo URL from Part 0** — don't re-ask). Clone it **into a native dir** (NOT the FUSE-mounted workspace — git locking fails there with `config.lock: Operation not permitted`). Tell them the working copy is ephemeral (GitHub + Vercel are the source of truth).
 
-     Wait (⚠️ write-credential — don't echo it back), then cache it under the course-standard name:
-     ```bash
-     aws secretsmanager create-secret --name flight/github --secret-string '{"pat":"<their token>"}' --region us-east-1
-     ```
+**B2 — Ask for the GitHub PAT.** Say:
+> "Paste me your **GitHub fine-grained PAT**. If you don't have one: github.com/settings/personal-access-tokens → *Generate new token (fine-grained)* → *Only select repositories* → this one repo → *Repository permissions → Contents → Read and write* → copy the `github_pat_…`. (Already cached it on a past run? Just say so — I'll reuse `flight/github`.)"
 
-**B2 — (Optional) confirm the push loop still works.** M0 already proved push→Vercel (the SPA conversion push + the live deploy), so this is a light re-check, not a fresh setup. If you want certainty before building, recall the token **from the secret you found in B1** (by its discovered name — never re-paste) and do a quick title round-trip:
+Wait for the token. ⚠️ It's a write-credential to their repo — don't echo it back in plaintext.
+
+**B3 — Cache it yourself** (check-then-collect):
 ```bash
-aws secretsmanager get-secret-value --secret-id "<the github secret name from B1>" --region us-east-1   # parse the "pat"
+aws secretsmanager describe-secret --secret-id flight/github --region us-east-1 --query "Name"
+# ResourceNotFoundException → create:
+aws secretsmanager create-secret --name flight/github --secret-string '{"pat":"<their token>"}' --region us-east-1
+# already exists → update:  aws secretsmanager put-secret-value --secret-id flight/github --secret-string '{"pat":"<their token>"}' --region us-east-1
 ```
-Use that `pat` to clone (into a **native dir**, not the FUSE-mounted workspace — git locking fails there with `config.lock: Operation not permitted`; the working copy is ephemeral, GitHub + Vercel are the source of truth), bump the title to **"Flight Price Notifier V3"**, push to their repo, confirm the Vercel deploy shows it, then revert. If it fails: the PAT lacks Contents:RW, or GitHub→Vercel auto-deploy is off — fix before building. Tell the student "✅ push loop confirmed — I always pull your token from the secret, never ask again."
 
-**B3 — Discover the Supabase secret** (scan, don't assume the name *or* the exact field keys):
-1. From the same inventory, pick the name containing **`supabase`**.
-2. Read it — expect a `url` plus a publishable/anon key, but **tolerate field-name variants**:
-   ```bash
-   aws secretsmanager get-secret-value --secret-id "<the name you found>" --region us-east-1 --query SecretString --output text
-   #   → e.g. {"url":"https://….supabase.co","publishable_key":"sb_publishable_…"}
-   #     the key field may instead be "anon_key", "publishableKey", "key" — match on the sb_publishable_*/eyJ… value, not the field name
-   ```
-   - Found a `url` + a browser-safe key (in whatever field) → "✅ Supabase url + publishable key already cached from M0 (`<name>`) — reusing." (Read the `url` here to satisfy Part 0.) Move to Part C.
-   - **No `supabase`-ish secret in the list** → **then** ask:
-     > "I don't see your Supabase values cached yet. Open your Supabase project → **Project Settings → API**, and paste me two values: the **Project URL** (`https://….supabase.co`) and the **publishable key** (`sb_publishable_*` — the browser-safe key; **NOT** the service-role key)."
+**B4 — Prove the push→Vercel loop by recalling the token FROM the secret** (this is the exact flow every milestone uses — no re-pasting):
+```bash
+aws secretsmanager get-secret-value --secret-id flight/github --region us-east-1   # parse the "pat"
+```
+Use that `pat` to: change the site title to **"Flight Price Notifier V3"**, push to the **Part-0 GitHub repo**, track the Vercel deployment, and confirm the **Part-0 Vercel deploy URL** shows the new title. **Verify** it on that live URL, then revert the title. If it fails: the PAT lacks Contents:RW, or GitHub→Vercel auto-deploy is off — fix before continuing (every M1 step pushes). Tell the student "✅ push loop works — and I'll always pull your token from the secret, never ask again."
 
-     Wait, then cache under the course-standard name:
-     ```bash
-     aws secretsmanager create-secret --name flight/supabase --secret-string '{"url":"<their url>","publishable_key":"<their key>"}' --region us-east-1
-     ```
-     > The publishable key is **public by design** (it ships in the browser bundle) — caching it is pure convenience; no Lambda reads it. **If they paste a `service_role` / secret key, stop them** — never cache that (see [[supabase-best-practice]] Rule 2).
+**B5 — Supabase (ask, then cache).** The Part-0 link was the Supabase **dashboard** URL — what you cache is different (the API values). Point them there and ask:
+> "Open your Supabase project → **Project Settings → API** (it's under the project you linked in Part 0). Paste me two values: the **Project URL** (`https://….supabase.co`) and the **publishable key** (`sb_publishable_*` — the browser-safe key; **NOT** the service-role key)."
+
+Wait, then cache (check-then-collect):
+```bash
+aws secretsmanager describe-secret --secret-id flight/supabase --region us-east-1 --query "Name"
+aws secretsmanager create-secret --name flight/supabase --secret-string '{"url":"<their url>","publishable_key":"<their key>"}' --region us-east-1
+# or put-secret-value if it exists
+```
+> The publishable key is **public by design** (it ships in the browser bundle) — caching it is pure convenience; no Lambda reads it. **If they paste a `service_role` / secret key, stop them** — never cache that (see [[supabase-best-practice]] Rule 2).
 
 ---
 
 ## Part C — Travelpayouts (ask, verify, cache)
-
-> **These last two (Travelpayouts, Resend) are secrets *you* create in this session** — so you control the name and shape, and an exact-name `describe-secret` before creating is correct (no discovery scan needed; you know the name because you're about to set it). The discover-by-scan rule only applies to the **M0 carryovers** above, which a *different* session named. Still — store them at the suggested `flight/*` with the documented JSON shape so the later build skill can find them the same way.
 
 **Ask the student for their Travelpayouts token.** Say:
 > "Paste me your **Travelpayouts API token**. Get it free at travelpayouts.com → connect the **Aviasales** program → Profile → API token. (Just the token — no `marker` needed; that's an optional booking-commission add-on for later.)"
@@ -218,11 +177,12 @@ aws logs filter-log-events --log-group-name /aws/lambda/flight-resend-test --que
 Run a final check and report to the student:
 ```bash
 aws sts get-caller-identity --query Account --output text --region us-east-1                 # AWS wired
-aws secretsmanager list-secrets --region us-east-1 --query "SecretList[].Name"                # scan the inventory; confirm a github-ish, supabase-ish, travelpayouts, and resend secret are all present (don't assume exact names)
+aws secretsmanager list-secrets --region us-east-1 --query "SecretList[].Name"                # all four flight/* present (list-all-and-scan; no backtick JMESPath)
 ```
 Confirm to the student, in plain language:
-- ✅ **AWS** wired (`[default]` profile) — carried over from M0.
-- ✅ **All four credentials present in Secrets Manager:** the GitHub + Supabase secrets (**discovered + reused from M0**, whatever names they sit under) and the new Travelpayouts + Resend ones (**cached this run** as `flight/travelpayouts` / `flight/resend`) — *you'll never have to paste any of these again; I look them up in Secrets Manager every session.*
+- ✅ **AWS** wired (`[default]` profile).
+- ✅ **All four secrets cached:** `flight/github`, `flight/supabase`, `flight/travelpayouts`, `flight/resend` — *you'll never have to paste these again; I pull them from Secrets Manager every session.*
+- ✅ **Push loop** proven (V3 round-trip, token recalled from the secret).
 - ✅ **Travelpayouts** `"success":true`; ✅ **Resend** test email arrived.
 
 Then say: **"Setup's done. Say『啟動 M1』and I'll build the whole notifier — subscribe, scheduled fetch, and the alert email."** Load `m1-flight-price-checker`.
